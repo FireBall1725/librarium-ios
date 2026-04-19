@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # needed for `gh workflow run testflight.yml` dispatch
 
 jobs:
   release:
