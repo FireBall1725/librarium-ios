@@ -22,6 +22,18 @@ Native iOS client for Librarium — a self-hosted personal library tracker. Buil
 - Offline mode with per-library caching
 - Dark mode
 
+## TestFlight
+
+The iOS app is in public beta on TestFlight. To try it without building from source:
+
+1. Install **[TestFlight](https://apps.apple.com/app/testflight/id899247664)** from the App Store (if you don't already have it).
+2. Open the invite link on your iPhone: **[testflight.apple.com/join/dA3sMnqR](https://testflight.apple.com/join/dA3sMnqR)**.
+3. Tap **Accept**, then **Install** — the app appears on your home screen.
+
+You'll still need a running [librarium-api](https://github.com/fireball1725/librarium-api) instance to point it at.
+
+Beta builds expire 90 days after upload; TestFlight will prompt you to update when a newer build is available.
+
 ## Getting Started
 
 ### 1. Clone or download
