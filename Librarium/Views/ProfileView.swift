@@ -1,0 +1,191 @@
+import SwiftUI
+
+struct ProfileView: View {
+    let account: ServerAccount
+
+    @Environment(AppState.self) private var appState
+    @Environment(\.dismiss) private var dismiss
+
+    // Server rename
+    @State private var serverName: String
+
+    // Profile
+    @State private var displayName: String
+    @State private var email: String
+    @State private var profileSaving = false
+
+    // Password
+    @State private var currentPassword = ""
+    @State private var newPassword = ""
+    @State private var confirmPassword = ""
+    @State private var passwordSaving = false
+
+    // Feedback
+    @State private var profileMessage: Message?
+    @State private var passwordMessage: Message?
+
+    struct Message {
+        let text: String
+        let success: Bool
+    }
+
+    init(account: ServerAccount) {
+        self.account = account
+        _serverName = State(initialValue: account.name)
+        _displayName = State(initialValue: account.user.displayName)
+        _email = State(initialValue: account.user.email)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("URL", value: account.url)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                LabeledContent("Username", value: account.user.username)
+                if account.user.isInstanceAdmin {
+                    Label("Instance admin", systemImage: "key.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.footnote)
+                }
+            } header: {
+                Text("Server")
+            }
+
+            Section {
+                TextField("Server name", text: $serverName)
+                    .autocorrectionDisabled()
+                    .onSubmit(commitServerName)
+                Button("Save name") { commitServerName() }
+                    .disabled(!serverNameChanged)
+            } header: {
+                Text("Rename this server")
+            } footer: {
+                Text("Shown in the account list and library picker.")
+            }
+
+            Section {
+                TextField("Display name", text: $displayName)
+                    .textContentType(.name)
+                TextField("Email", text: $email)
+                    .keyboardType(.emailAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textContentType(.emailAddress)
+
+                Button {
+                    Task { await saveProfile() }
+                } label: {
+                    HStack {
+                        Text("Save profile")
+                        if profileSaving {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(!profileChanged || profileSaving || displayName.trimmingCharacters(in: .whitespaces).isEmpty || email.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                if let msg = profileMessage {
+                    Text(msg.text)
+                        .font(.footnote)
+                        .foregroundStyle(msg.success ? .green : .red)
+                }
+            } header: {
+                Text("Profile")
+            }
+
+            Section {
+                SecureField("Current password", text: $currentPassword)
+                    .textContentType(.password)
+                SecureField("New password (min 8)", text: $newPassword)
+                    .textContentType(.newPassword)
+                SecureField("Confirm new password", text: $confirmPassword)
+                    .textContentType(.newPassword)
+
+                Button {
+                    Task { await savePassword() }
+                } label: {
+                    HStack {
+                        Text("Change password")
+                        if passwordSaving {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(passwordSaving || currentPassword.isEmpty || newPassword.isEmpty || confirmPassword.isEmpty)
+
+                if let msg = passwordMessage {
+                    Text(msg.text)
+                        .font(.footnote)
+                        .foregroundStyle(msg.success ? .green : .red)
+                }
+            } header: {
+                Text("Security")
+            }
+        }
+        .navigationTitle("Account")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: - Derived
+
+    private var serverNameChanged: Bool {
+        let trimmed = serverName.trimmingCharacters(in: .whitespaces)
+        return !trimmed.isEmpty && trimmed != account.name
+    }
+
+    private var profileChanged: Bool {
+        let d = displayName.trimmingCharacters(in: .whitespaces)
+        let e = email.trimmingCharacters(in: .whitespaces)
+        return d != account.user.displayName || e != account.user.email
+    }
+
+    // MARK: - Actions
+
+    private func commitServerName() {
+        let trimmed = serverName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed != account.name else { return }
+        appState.updateAccountName(trimmed, for: account.id)
+    }
+
+    private func saveProfile() async {
+        let d = displayName.trimmingCharacters(in: .whitespaces)
+        let e = email.trimmingCharacters(in: .whitespaces)
+        guard !d.isEmpty, !e.isEmpty else { return }
+        profileSaving = true
+        defer { profileSaving = false }
+        let client = appState.makeClient(serverURL: account.url)
+        do {
+            let updated = try await UserService(client: client).updateProfile(displayName: d, email: e)
+            appState.updateAccountUser(updated, for: account.id)
+            profileMessage = Message(text: "Profile updated.", success: true)
+        } catch {
+            profileMessage = Message(text: error.localizedDescription, success: false)
+        }
+    }
+
+    private func savePassword() async {
+        if newPassword.count < 8 {
+            passwordMessage = Message(text: "New password must be at least 8 characters.", success: false)
+            return
+        }
+        if newPassword != confirmPassword {
+            passwordMessage = Message(text: "New passwords do not match.", success: false)
+            return
+        }
+        passwordSaving = true
+        defer { passwordSaving = false }
+        let client = appState.makeClient(serverURL: account.url)
+        do {
+            try await UserService(client: client).updatePassword(current: currentPassword, new: newPassword)
+            currentPassword = ""
+            newPassword = ""
+            confirmPassword = ""
+            passwordMessage = Message(text: "Password changed.", success: true)
+        } catch {
+            passwordMessage = Message(text: error.localizedDescription, success: false)
+        }
+    }
+}
