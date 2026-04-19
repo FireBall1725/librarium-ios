@@ -90,22 +90,47 @@ jobs:
           set -euo pipefail
           NEXT_DEV="${{ steps.version.outputs.next_dev }}"
           python3 - <<PY
-          import re, pathlib
+          import re, pathlib, sys
           p = pathlib.Path("Librarium.xcodeproj/project.pbxproj")
           text = p.read_text()
-          # Find every build configuration block and rewrite MARKETING_VERSION when the
-          # block is named "Debug". Block delimiter is "};" at column 2 of a line.
+
+          # An XCBuildConfiguration's opening line looks like
+          #   <UUID> /* Debug */ = {
+          # and the object contains a nested "buildSettings = { ... };" block,
+          # so we can't split on the first "};" — we need proper brace matching.
+          # A pbxproj typically has multiple Debug blocks (one per target/project),
+          # so iterate and rewrite MARKETING_VERSION wherever it appears.
+          total = 0
           out = []
-          block = []
-          for line in text.splitlines(keepends=True):
-              block.append(line)
-              if line.strip() == "};":
-                  joined = "".join(block)
-                  if re.search(r'name\s*=\s*Debug;', joined):
-                      joined = re.sub(r'MARKETING_VERSION\s*=\s*[^;]+;', f'MARKETING_VERSION = ${NEXT_DEV};', joined)
-                  out.append(joined)
-                  block = []
-          out.append("".join(block))
+          cursor = 0
+          for m in re.finditer(r'/\* Debug \*/ = \{', text):
+              start = m.start()
+              depth = 0
+              end = None
+              for i in range(m.end() - 1, len(text)):
+                  c = text[i]
+                  if c == '{':
+                      depth += 1
+                  elif c == '}':
+                      depth -= 1
+                      if depth == 0:
+                          end = i + 1
+                          break
+              if end is None:
+                  sys.exit("Debug block never closes")
+              block = text[start:end]
+              new_block, n = re.subn(
+                  r'MARKETING_VERSION\s*=\s*[^;]+;',
+                  'MARKETING_VERSION = "${NEXT_DEV}";',
+                  block,
+              )
+              total += n
+              out.append(text[cursor:start])
+              out.append(new_block)
+              cursor = end
+          out.append(text[cursor:])
+          if total == 0:
+              sys.exit("MARKETING_VERSION not found in any Debug block")
           p.write_text("".join(out))
           PY
           grep -n "MARKETING_VERSION" Librarium.xcodeproj/project.pbxproj
