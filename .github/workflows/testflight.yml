@@ -17,9 +17,13 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.4.app
 
-      # Use the short git hash as the build number — unique and traceable
+      # CFBundleVersion must be dotted integers, and TestFlight rejects any
+      # upload whose build number isn't strictly greater than the previous
+      # build for the same CFBundleShortVersionString. github.run_number is
+      # monotonic per workflow and resets only on manual reset, so it's a
+      # safe choice.
       - name: Set build number
-        run: echo "BUILD_NUMBER=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+        run: echo "BUILD_NUMBER=${{ github.run_number }}" >> $GITHUB_ENV
 
       # Import the distribution certificate into a temporary keychain so
       # xcodebuild can sign the archive without touching the system keychain.
