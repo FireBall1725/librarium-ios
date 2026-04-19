@@ -18,13 +18,14 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_26.4.app
 
       # Derive CFBundleShortVersionString from the tag (v26.4.1 -> 26.4.1)
-      # and pin CFBundleVersion to the workflow run number so each upload
-      # to TestFlight is monotonic.
+      # and set CFBundleVersion to today's date in DDMMYY form (UTC) so the
+      # build number is self-describing — you can read "when was this built?"
+      # off the TestFlight entry at a glance.
       - name: Set version and build number
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "MARKETING_VERSION=$VERSION" >> $GITHUB_ENV
-          echo "BUILD_NUMBER=${{ github.run_number }}" >> $GITHUB_ENV
+          echo "BUILD_NUMBER=$(date -u +%d%m%y)" >> $GITHUB_ENV
 
       # Import the distribution certificate into a temporary keychain so
       # xcodebuild can sign the archive without touching the system keychain.

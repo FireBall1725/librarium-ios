@@ -97,7 +97,7 @@ Run via Xcode. Debug builds use an orange app icon and display as **Librarium De
 
 ### TestFlight (CI)
 
-Pushes to `main` automatically trigger a GitHub Actions workflow that archives, signs, and uploads to TestFlight. The build number is set to the short git commit hash (e.g. `26.4.0 (a3f9c1)`), making every build traceable to an exact commit.
+Tagging a release (via the **Release** workflow, below) pushes a `v<version>` tag which in turn triggers the **TestFlight** workflow. That workflow archives, signs, and uploads to TestFlight. The build number is today's UTC date in `DDMMYY` form (e.g. `26.4.1 (190426)` = version 26.4.1 built on 19 Apr 2026), making every build self-dating.
 
 ### Releasing
 
