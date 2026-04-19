@@ -150,3 +150,17 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
+
+      # Tag pushes performed with the default GITHUB_TOKEN don't trigger
+      # dependent `push:` workflows, so `testflight.yml` won't auto-fire off
+      # the tag we just pushed. workflow_dispatch is an exception to that
+      # rule, so we kick it off explicitly here with --ref pointed at the
+      # newly-created tag.
+      - name: Dispatch TestFlight workflow
+        if: ${{ inputs.dry-run == false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run testflight.yml \
+            --ref "v${{ steps.version.outputs.version }}" \
+            --repo "${{ github.repository }}"

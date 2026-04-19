@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  # Also callable by hand (or from release.yml via `gh workflow run`), with
+  # the tag passed via --ref. Needed because tag pushes made with the default
+  # GITHUB_TOKEN don't fire dependent `push` workflows, but workflow_dispatch
+  # is an exception to that rule — so release.yml can still kick this off.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -20,10 +25,16 @@ jobs:
       # Derive CFBundleShortVersionString from the tag (v26.4.1 -> 26.4.1)
       # and set CFBundleVersion to today's date in DDMMYY form (UTC) so the
       # build number is self-describing — you can read "when was this built?"
-      # off the TestFlight entry at a glance.
+      # off the TestFlight entry at a glance. GITHUB_REF_NAME must be a
+      # version tag in both the push and workflow_dispatch paths; we guard
+      # against being dispatched from `main` by accident.
       - name: Set version and build number
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Expected GITHUB_REF_NAME to be a version tag (e.g. v26.4.1); got '$GITHUB_REF_NAME'. Dispatch with --ref v<version>."
+            exit 1
+          fi
           echo "MARKETING_VERSION=$VERSION" >> $GITHUB_ENV
           echo "BUILD_NUMBER=$(date -u +%d%m%y)" >> $GITHUB_ENV
 
