@@ -64,14 +64,19 @@ final class AppState {
     }
 
     func removeAccount(id: UUID) {
+        let url = accounts.first(where: { $0.id == id })?.url
         KeychainService.shared.delete("access_\(id.uuidString)")
         KeychainService.shared.delete("refresh_\(id.uuidString)")
         accounts.removeAll { $0.id == id }
         if activeAccountID == id { activeAccountID = nil }
         saveAccounts()
+        if let url {
+            LibraryOfflineStore.shared.purgeLibraries(forServerURL: url)
+        }
     }
 
     func logout() {
+        let urls = accounts.map { $0.url }
         for account in accounts {
             KeychainService.shared.delete("access_\(account.id.uuidString)")
             KeychainService.shared.delete("refresh_\(account.id.uuidString)")
@@ -80,6 +85,9 @@ final class AppState {
         activeAccountID = nil
         isOffline = false
         UserDefaults.standard.removeObject(forKey: "server_accounts")
+        for url in urls {
+            LibraryOfflineStore.shared.purgeLibraries(forServerURL: url)
+        }
     }
 
     // MARK: - Client factory

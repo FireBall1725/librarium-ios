@@ -1,8 +1,15 @@
 import SwiftUI
 
+enum LibraryRowState {
+    case online            // fetched live this session
+    case offlineCached     // server unreachable, books in local cache
+    case offline           // server unreachable, no book cache
+}
+
 @Observable
 private final class LibrariesViewModel {
     var libraries: [Library] = []
+    var libraryStates: [String: LibraryRowState] = [:]
     var isLoading = false
     var error: String?
     var isOffline = false
@@ -16,55 +23,86 @@ private final class LibrariesViewModel {
 
         let accounts = appState.accounts
         guard !accounts.isEmpty else {
-            libraries = []
+            libraries = []; libraryStates = [:]
             isOffline = false; isUnreachable = true
             return
         }
 
-        var results: [Library] = []
-        var anySuccess = false
+        var successfulURLs: Set<String> = []
+        var freshLibraries: [Library] = []
 
-        await withTaskGroup(of: [Library]?.self) { group in
+        await withTaskGroup(of: (String, [Library]?).self) { group in
             for account in accounts {
                 group.addTask {
                     do {
-                        let client = appState.makeClient(serverURL: account.url)
+                        let client = await appState.makeClient(serverURL: account.url)
                         var libs = try await LibraryService(client: client).list()
                         for i in libs.indices {
                             libs[i].serverURL  = account.url
                             libs[i].serverName = account.name
                         }
-                        return libs
+                        return (account.url, libs)
                     } catch {
-                        return nil
+                        return (account.url, nil)
                     }
                 }
             }
-            for await libs in group {
+            for await (url, libs) in group {
                 if let libs {
-                    anySuccess = true
-                    results.append(contentsOf: libs)
+                    successfulURLs.insert(url)
+                    freshLibraries.append(contentsOf: libs)
                 }
             }
         }
 
-        if anySuccess {
-            libraries = results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            isOffline = false; isUnreachable = false
-            for lib in libraries { offlineStore.cacheLibrary(lib) }
-            for lib in libraries where offlineStore.isEnabled(for: lib.clientKey) {
-                let client = appState.makeClient(serverURL: lib.serverURL)
-                Task { await offlineStore.syncBooks(for: lib, client: client) }
-            }
-        } else {
-            let cached = offlineStore.cachedLibraries()
-            if !cached.isEmpty {
-                libraries = cached
-                isOffline = true; isUnreachable = false
+        // Always persist metadata for fresh libraries — decoupled from the
+        // per-library "Keep offline" book-caching opt-in so every library
+        // stays visible in the list when its server is unreachable.
+        for lib in freshLibraries { offlineStore.cacheLibrary(lib) }
+
+        // Merge in cached libraries for accounts that failed this pass.
+        // Filter to currently-configured accounts (defensive; purge handles
+        // the normal case) and skip any key we already have fresh data for.
+        let accountURLs = Set(accounts.map { $0.url })
+        let freshKeys = Set(freshLibraries.map { $0.clientKey })
+        let cachedExtras = offlineStore.cachedLibraries().filter {
+            accountURLs.contains($0.serverURL)
+                && !successfulURLs.contains($0.serverURL)
+                && !freshKeys.contains($0.clientKey)
+        }
+
+        let combined = (freshLibraries + cachedExtras)
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        var states: [String: LibraryRowState] = [:]
+        for lib in combined {
+            if successfulURLs.contains(lib.serverURL) {
+                states[lib.clientKey] = .online
+            } else if offlineStore.cachedBooks(for: lib.clientKey) != nil {
+                states[lib.clientKey] = .offlineCached
             } else {
-                libraries = []
-                isOffline = false; isUnreachable = true
+                states[lib.clientKey] = .offline
             }
+        }
+
+        libraries = combined
+        libraryStates = states
+
+        for lib in combined
+        where successfulURLs.contains(lib.serverURL) && offlineStore.isEnabled(for: lib.clientKey) {
+            let client = appState.makeClient(serverURL: lib.serverURL)
+            Task { await offlineStore.syncBooks(for: lib, client: client) }
+        }
+
+        // Global flags. `isOffline` is now "every server is unreachable" so
+        // downstream views (Books/Series/Shelves/etc.) keep their existing
+        // "hide network actions when offline" semantics; mixed states don't
+        // trip the global offline guard.
+        if combined.isEmpty && successfulURLs.isEmpty {
+            isOffline = false; isUnreachable = true
+        } else {
+            isOffline = successfulURLs.isEmpty
+            isUnreachable = false
         }
     }
 
@@ -76,11 +114,13 @@ private final class LibrariesViewModel {
             libraries[i] = updated
         }
         offlineStore.cacheLibrary(updated)
+        libraryStates[updated.clientKey] = .online
     }
 
     func appendLibrary(_ lib: Library) {
         libraries.append(lib)
         offlineStore.cacheLibrary(lib)
+        libraryStates[lib.clientKey] = .online
     }
 }
 
@@ -114,7 +154,11 @@ struct LibrariesView: View {
                     )
                 } else {
                     List(vm.libraries, id: \.clientKey) { library in
-                        LibraryRow(library: library, multiServer: appState.accounts.count > 1)
+                        LibraryRow(
+                            library: library,
+                            multiServer: appState.accounts.count > 1,
+                            rowState: vm.libraryStates[library.clientKey] ?? .online
+                        )
                             .contentShape(Rectangle())
                             .onTapGesture { onSelect(library) }
                             .swipeActions(edge: .leading) {
@@ -126,9 +170,6 @@ struct LibrariesView: View {
                     }
                     .listStyle(.insetGrouped)
                 }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if vm.isOffline { OfflineBanner() }
             }
             .navigationTitle("Libraries")
             .toolbar {
@@ -190,6 +231,7 @@ struct LibrariesView: View {
 private struct LibraryRow: View {
     let library: Library
     let multiServer: Bool
+    let rowState: LibraryRowState
     private let offlineStore = LibraryOfflineStore.shared
 
     var body: some View {
@@ -220,43 +262,11 @@ private struct LibraryRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                if let state = offlineStore.bookCacheStates[library.clientKey] {
-                    switch state {
-                    case .syncing(let progress):
-                        VStack(alignment: .leading, spacing: 2) {
-                            ProgressView(value: progress)
-                                .tint(Color.accentColor)
-                                .frame(maxWidth: 180)
-                            Text("Caching books…")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.top, 2)
-                    case .cached(let count):
-                        Text("\(count) book\(count == 1 ? "" : "s") cached")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    case .notCached:
-                        EmptyView()
-                    }
-                }
+                statusLine
             }
             Spacer()
             HStack(spacing: 8) {
-                if let state = offlineStore.bookCacheStates[library.clientKey] {
-                    switch state {
-                    case .syncing:
-                        ProgressView().scaleEffect(0.75)
-                    case .cached:
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                    case .notCached:
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.tint)
-                    }
-                }
+                statusIcon
                 if library.isPublic {
                     Image(systemName: "globe")
                         .font(.caption)
@@ -268,6 +278,72 @@ private struct LibraryRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        switch rowState {
+        case .online:
+            if let state = offlineStore.bookCacheStates[library.clientKey] {
+                switch state {
+                case .syncing(let progress):
+                    VStack(alignment: .leading, spacing: 2) {
+                        ProgressView(value: progress)
+                            .tint(Color.accentColor)
+                            .frame(maxWidth: 180)
+                        Text("Caching books…")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 2)
+                case .cached(let count):
+                    Text("\(count) book\(count == 1 ? "" : "s") cached")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                case .notCached:
+                    EmptyView()
+                }
+            }
+        case .offlineCached:
+            if case .cached(let count) = offlineStore.bookCacheStates[library.clientKey] {
+                Text("Offline · \(count) book\(count == 1 ? "" : "s") cached")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("Offline · cached")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        case .offline:
+            Text("Offline")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch rowState {
+        case .online:
+            if let state = offlineStore.bookCacheStates[library.clientKey] {
+                switch state {
+                case .syncing:
+                    ProgressView().scaleEffect(0.75)
+                case .cached:
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                case .notCached:
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                }
+            }
+        case .offlineCached, .offline:
+            Image(systemName: "wifi.slash")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
     }
 }
 
@@ -468,19 +544,3 @@ struct ServerUnreachableView: View {
     }
 }
 
-// MARK: - Offline Banner
-
-struct OfflineBanner: View {
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "wifi.slash")
-                .font(.caption.weight(.semibold))
-            Text("Offline — showing cached data")
-                .font(.caption.weight(.medium))
-        }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 7)
-        .background(Color.orange.gradient)
-    }
-}
