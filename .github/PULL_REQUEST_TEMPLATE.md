@@ -26,7 +26,6 @@
 - [ ] All commits are signed off under the [DCO](../DCO) (`git commit -s`)
 - [ ] Builds cleanly in Xcode for at least one iOS 17+ simulator
 - [ ] No force unwraps (`!`) introduced
-- [ ] `CHANGELOG.md` updated under `## [Unreleased]` for user-facing changes
 
 ## Related issues
 

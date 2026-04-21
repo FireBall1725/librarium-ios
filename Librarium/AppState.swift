@@ -133,8 +133,19 @@ final class AppState {
             accounts[i].user = tokens.user
             saveAccounts()
             return true
-        } catch {
+        } catch APIError.unauthorized {
+            // Refresh token was rejected — user genuinely needs to re-auth.
             removeAccount(id: accountID)
+            return false
+        } catch let APIError.serverError(code, _) where code == 403 {
+            // 403 from the auth endpoint is also a definitive rejection.
+            removeAccount(id: accountID)
+            return false
+        } catch {
+            // Transient failure (network unreachable, 5xx, decode, timeout).
+            // Keep the account — previously we deleted it on any error here,
+            // which made servers silently disappear whenever the app relaunched
+            // during a brief connectivity hiccup or server cold-start.
             return false
         }
     }

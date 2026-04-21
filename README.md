@@ -87,7 +87,7 @@ Format: **`YY.MM.revision`** (e.g. `26.4.0`).
 - `revision` — feature counter within the month, starting at `0`. Resets to `0` when the month rolls over.
 - `-dev` suffix — local/Debug builds only. Release builds drop the suffix since the App Store requires strictly numeric `MARKETING_VERSION`.
 
-Release history in [CHANGELOG.md](./CHANGELOG.md).
+Release history is generated from tags — see [GitHub Releases](https://github.com/FireBall1725/librarium-ios/releases).
 
 ## Builds
 
