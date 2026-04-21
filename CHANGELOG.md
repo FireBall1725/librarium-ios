@@ -15,9 +15,9 @@ Versions `0.1.0` → `0.13.0` predate this scheme. `26.4.0` is the first release
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
-- CHANGELOG, CI workflow, and release workflow.
+- Servers no longer silently disappear after transient network errors. The token-refresh path previously removed the account on *any* error from `/auth/refresh`, so a brief connectivity hiccup or server cold-start while the app was returning from background would wipe the account from UserDefaults and the Keychain. The account is now only dropped on a definitive auth rejection (401 / 403); transient failures (network, 5xx, timeouts, decode errors) leave the account intact so the next refresh attempt can succeed.
 
 ## [26.4.0] — Initial independent release
 
