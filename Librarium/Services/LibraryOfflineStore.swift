@@ -20,7 +20,14 @@ enum BookCacheState: Equatable {
 final class LibraryOfflineStore {
     static let shared = LibraryOfflineStore()
 
+    /// Libraries the user has opted into full *book* caching for.
     private(set) var enabledKeys: Set<String> = []
+
+    /// Every library we've ever fetched. Metadata is cached for all of these
+    /// so offline reloads can still show the list; books are only cached for
+    /// the subset also in `enabledKeys`.
+    private(set) var knownKeys: Set<String> = []
+
     private(set) var bookCacheStates: [String: BookCacheState] = [:]
 
     private let fm = FileManager.default
@@ -34,6 +41,9 @@ final class LibraryOfflineStore {
         self.cacheDir = base
 
         enabledKeys = Set(UserDefaults.standard.stringArray(forKey: "offline_enabled_keys") ?? [])
+        knownKeys = Set(UserDefaults.standard.stringArray(forKey: "offline_known_keys") ?? [])
+        // Backfill: any enabled key is by definition known.
+        knownKeys.formUnion(enabledKeys)
         for key in enabledKeys {
             if let books = cachedBooks(for: key) {
                 bookCacheStates[key] = .cached(bookCount: books.count)
@@ -50,21 +60,24 @@ final class LibraryOfflineStore {
             enabledKeys.insert(key)
             if bookCacheStates[key] == nil { bookCacheStates[key] = .notCached }
         } else {
+            // Turning off "Keep offline" drops the *book* cache and opt-in flag
+            // only. Library metadata stays in the always-cached set so the
+            // library still appears in the list when the server is unreachable.
             enabledKeys.remove(key)
-            try? fm.removeItem(at: libraryFile(key))
             try? fm.removeItem(at: booksFile(key))
             UserDefaults.standard.removeObject(forKey: fingerprintKey(key))
-            UserDefaults.standard.removeObject(forKey: serverURLKey(key))
-            UserDefaults.standard.removeObject(forKey: serverNameKey(key))
             bookCacheStates.removeValue(forKey: key)
         }
         UserDefaults.standard.set(Array(enabledKeys), forKey: "offline_enabled_keys")
     }
 
-    /// Call after a successful online load to persist the library for offline use.
+    /// Persist a library's metadata after a successful online fetch. Always
+    /// called regardless of the per-library "Keep offline" opt-in so every
+    /// library stays visible in the list when its server is unreachable.
     func cacheLibrary(_ library: Library) {
         let key = library.clientKey
-        guard isEnabled(for: key) else { return }
+        knownKeys.insert(key)
+        UserDefaults.standard.set(Array(knownKeys), forKey: "offline_known_keys")
         if let data = try? JSONEncoder().encode(library) {
             try? data.write(to: libraryFile(key), options: .atomic)
         }
@@ -73,9 +86,10 @@ final class LibraryOfflineStore {
         UserDefaults.standard.set(library.serverName, forKey: serverNameKey(key))
     }
 
-    /// Returns all cached libraries for keys that have offline enabled.
+    /// Returns every library we've ever cached, regardless of opt-in status.
+    /// Used to populate the list when one or more servers are offline.
     func cachedLibraries() -> [Library] {
-        enabledKeys
+        knownKeys
             .compactMap { key -> Library? in
                 guard let data = try? Data(contentsOf: libraryFile(key)),
                       var lib = try? JSONDecoder().decode(Library.self, from: data) else { return nil }
@@ -85,6 +99,27 @@ final class LibraryOfflineStore {
                 return lib
             }
             .sorted { $0.name < $1.name }
+    }
+
+    /// Drop every cached library (metadata, books, fingerprints, opt-in flag)
+    /// belonging to the given server URL. Called when a server is removed so
+    /// stale rows don't linger in the Libraries list after sign-out.
+    func purgeLibraries(forServerURL serverURL: String) {
+        let matches = knownKeys.filter {
+            UserDefaults.standard.string(forKey: serverURLKey($0)) == serverURL
+        }
+        for key in matches {
+            try? fm.removeItem(at: libraryFile(key))
+            try? fm.removeItem(at: booksFile(key))
+            UserDefaults.standard.removeObject(forKey: fingerprintKey(key))
+            UserDefaults.standard.removeObject(forKey: serverURLKey(key))
+            UserDefaults.standard.removeObject(forKey: serverNameKey(key))
+            enabledKeys.remove(key)
+            knownKeys.remove(key)
+            bookCacheStates.removeValue(forKey: key)
+        }
+        UserDefaults.standard.set(Array(enabledKeys), forKey: "offline_enabled_keys")
+        UserDefaults.standard.set(Array(knownKeys), forKey: "offline_known_keys")
     }
 
     /// Returns cached books for a library, or nil if no cache exists.
