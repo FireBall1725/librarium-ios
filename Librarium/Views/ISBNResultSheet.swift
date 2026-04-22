@@ -222,7 +222,9 @@ struct ISBNResultSheet: View {
 
     private func load() async {
         isLoading = true; defer { isLoading = false }
-        let client = appState.makeClient()
+        // Quick-scan metadata lookups always hit the user's primary server, so
+        // the result doesn't drift based on which library happens to be open.
+        let client = appState.makePrimaryClient()
 
         // Lookup book metadata and per-library ownership checks in parallel
         async let lookupTask: [ISBNLookupResult]? = try? LookupService(client: client).isbn(isbn)

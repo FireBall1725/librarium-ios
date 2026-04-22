@@ -10,7 +10,18 @@ final class AppState {
     var isAuthenticated: Bool { !accounts.isEmpty }
     var isOffline = false
 
-    var currentUser: User? { activeAccount?.user ?? accounts.first?.user }
+    var currentUser: User? { primaryAccount?.user ?? accounts.first?.user }
+
+    // MARK: - Primary account
+
+    /// User-selected "home" server. Source of identity for the splash welcome
+    /// and of metadata for global lookups like quick scan. Distinct from
+    /// `activeAccount`, which tracks the library currently being viewed.
+    private(set) var primaryAccountID: UUID?
+
+    var primaryAccount: ServerAccount? {
+        accounts.first(where: { $0.id == primaryAccountID }) ?? accounts.first
+    }
 
     // MARK: - Active account
 
@@ -32,6 +43,7 @@ final class AppState {
     init() {
         migrateIfNeeded()
         loadAccounts()
+        backfillPrimaryIfNeeded()
     }
 
     // MARK: - Account management
@@ -42,6 +54,12 @@ final class AppState {
         }
     }
 
+    func setPrimaryAccount(id: UUID) {
+        guard accounts.contains(where: { $0.id == id }) else { return }
+        primaryAccountID = id
+        savePrimary()
+    }
+
     func addAccount(_ account: ServerAccount) {
         if let i = accounts.firstIndex(where: { $0.url == account.url }) {
             accounts[i] = account
@@ -49,6 +67,10 @@ final class AppState {
             accounts.append(account)
         }
         saveAccounts()
+        if primaryAccountID == nil {
+            primaryAccountID = account.id
+            savePrimary()
+        }
     }
 
     func updateAccountName(_ name: String, for id: UUID) {
@@ -69,6 +91,10 @@ final class AppState {
         KeychainService.shared.delete("refresh_\(id.uuidString)")
         accounts.removeAll { $0.id == id }
         if activeAccountID == id { activeAccountID = nil }
+        if primaryAccountID == id {
+            primaryAccountID = nil
+            savePrimary()
+        }
         saveAccounts()
         if let url {
             LibraryOfflineStore.shared.purgeLibraries(forServerURL: url)
@@ -83,8 +109,10 @@ final class AppState {
         }
         accounts = []
         activeAccountID = nil
+        primaryAccountID = nil
         isOffline = false
         UserDefaults.standard.removeObject(forKey: "server_accounts")
+        UserDefaults.standard.removeObject(forKey: "primary_account_id")
         for url in urls {
             LibraryOfflineStore.shared.purgeLibraries(forServerURL: url)
         }
@@ -118,6 +146,16 @@ final class AppState {
             return ok ? self.accounts.first(where: { $0.id == accountID })?.accessToken : nil
         }
         return client
+    }
+
+    /// Client bound to the user-selected primary server — used for global
+    /// lookups (e.g. ISBN metadata) that should not drift based on which
+    /// library the user happens to be viewing.
+    func makePrimaryClient() -> APIClient {
+        guard let account = primaryAccount else {
+            return APIClient(baseURL: "")
+        }
+        return makeClient(serverURL: account.url)
     }
 
     // MARK: - Token refresh
@@ -175,6 +213,11 @@ final class AppState {
                 user: meta.user
             )
         }
+        if let raw = UserDefaults.standard.string(forKey: "primary_account_id"),
+           let id = UUID(uuidString: raw),
+           accounts.contains(where: { $0.id == id }) {
+            primaryAccountID = id
+        }
     }
 
     private func saveAccounts() {
@@ -186,6 +229,23 @@ final class AppState {
             KeychainService.shared.set(account.accessToken,  forKey: "access_\(account.id.uuidString)")
             KeychainService.shared.set(account.refreshToken, forKey: "refresh_\(account.id.uuidString)")
         }
+    }
+
+    private func savePrimary() {
+        if let id = primaryAccountID {
+            UserDefaults.standard.set(id.uuidString, forKey: "primary_account_id")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "primary_account_id")
+        }
+    }
+
+    /// One-time promotion for installs that predate primary-account tracking:
+    /// if any accounts exist but no primary has been chosen, pick the first
+    /// one so the welcome banner and quick-scan target become deterministic.
+    private func backfillPrimaryIfNeeded() {
+        guard primaryAccountID == nil, let first = accounts.first else { return }
+        primaryAccountID = first.id
+        savePrimary()
     }
 
     private func migrateIfNeeded() {
