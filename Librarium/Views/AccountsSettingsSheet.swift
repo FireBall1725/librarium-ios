@@ -12,7 +12,20 @@ struct AccountsSettingsSheet: View {
                 Section {
                     ForEach(appState.accounts) { account in
                         NavigationLink(value: account.id) {
-                            AccountRow(account: account)
+                            AccountRow(
+                                account: account,
+                                isPrimary: account.id == appState.primaryAccountID
+                            )
+                        }
+                        .swipeActions(edge: .leading) {
+                            if account.id != appState.primaryAccountID {
+                                Button {
+                                    appState.setPrimaryAccount(id: account.id)
+                                } label: {
+                                    Label("Primary", systemImage: "star.fill")
+                                }
+                                .tint(.indigo)
+                            }
                         }
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
@@ -21,6 +34,10 @@ struct AccountsSettingsSheet: View {
                                 Label("Remove", systemImage: "trash")
                             }
                         }
+                    }
+                } footer: {
+                    if appState.accounts.count > 1 {
+                        Text("The primary server is used for the welcome screen and for quick-scan metadata lookups. Swipe right on a server to make it primary.")
                     }
                 }
 
@@ -83,20 +100,31 @@ struct AccountsSettingsSheet: View {
 
 private struct AccountRow: View {
     let account: ServerAccount
+    let isPrimary: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(account.name)
-                .font(.headline)
-            Text(account.url)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Text("\(account.user.displayName) · \(account.user.email)")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(account.name)
+                        .font(.headline)
+                    if isPrimary {
+                        Image(systemName: "star.fill")
+                            .font(.caption)
+                            .foregroundStyle(.indigo)
+                            .accessibilityLabel("Primary server")
+                    }
+                }
+                Text(account.url)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("\(account.user.displayName) · \(account.user.email)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
         }
         .padding(.vertical, 2)
     }

@@ -48,8 +48,24 @@ struct ProfileView: View {
                         .foregroundStyle(.secondary)
                         .font(.footnote)
                 }
+
+                if appState.primaryAccountID == account.id {
+                    Label("Primary server", systemImage: "star.fill")
+                        .foregroundStyle(.indigo)
+                        .font(.footnote)
+                } else {
+                    Button {
+                        appState.setPrimaryAccount(id: account.id)
+                    } label: {
+                        Label("Make primary server", systemImage: "star")
+                    }
+                }
             } header: {
                 Text("Server")
+            } footer: {
+                if appState.primaryAccountID == account.id {
+                    Text("This server is used for the welcome screen and for quick-scan metadata lookups.")
+                }
             }
 
             Section {
