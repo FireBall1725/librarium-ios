@@ -62,6 +62,17 @@ struct BookService {
         try await client.delete("/api/v1/libraries/\(libraryId)/books/\(bookId)")
     }
 
+    // MARK: - Enrichment
+
+    /// Queues a library-agnostic metadata + cover enrichment batch for a
+    /// single book. The server returns an `EnrichmentBatch` that we ignore
+    /// — we just care that the job got queued. Fire-and-forget.
+    func enrich(bookId: String) async throws {
+        struct Body: Encodable {}
+        struct Unused: Decodable {}
+        let _: Unused = try await client.post("/api/v1/books/\(bookId)/enrich", body: Body())
+    }
+
     // MARK: - Cover
 
     func uploadCover(libraryId: String, bookId: String, jpegData: Data) async throws {
@@ -94,8 +105,18 @@ struct BookService {
 
     // MARK: - Interaction (reading status)
 
-    func interaction(libraryId: String, bookId: String, editionId: String) async throws -> UserBookInteraction {
-        try await client.get("/api/v1/libraries/\(libraryId)/books/\(bookId)/editions/\(editionId)/my-interaction")
+    /// Returns `nil` when the user has no interaction row for this edition
+    /// yet — the server distinguishes that from "missing endpoint" by
+    /// responding 200 with a null envelope (`{"data": null}`), which trips
+    /// the generic Envelope<T> decoder. Swallow that specific case so the
+    /// caller doesn't need to branch on a meaningless decode error.
+    func interaction(libraryId: String, bookId: String, editionId: String) async throws -> UserBookInteraction? {
+        do {
+            let i: UserBookInteraction = try await client.get("/api/v1/libraries/\(libraryId)/books/\(bookId)/editions/\(editionId)/my-interaction")
+            return i
+        } catch APIError.decodingError {
+            return nil
+        }
     }
 
     func updateInteraction(libraryId: String, bookId: String, editionId: String, body: UpdateInteractionRequest) async throws -> UserBookInteraction {

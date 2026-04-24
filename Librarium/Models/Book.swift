@@ -17,6 +17,11 @@ struct Genre: Codable, Identifiable, Hashable {
 
 struct Book: Codable, Identifiable, Hashable {
     let id: String
+    /// Nullable since the m2m refactor: a book can live in zero or more
+    /// libraries (floating books backing AI suggestions; books shared across
+    /// multiple libraries). Server emits `library_id: null` for floating
+    /// books and a representative id otherwise — but iOS shouldn't depend
+    /// on it being present.
     let libraryId: String
     let title: String
     let subtitle: String
@@ -35,7 +40,7 @@ struct Book: Codable, Identifiable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id           = try c.decode(String.self,   forKey: .id)
-        libraryId    = try c.decode(String.self,   forKey: .libraryId)
+        libraryId    = try c.decodeIfPresent(String.self, forKey: .libraryId) ?? ""
         title        = try c.decode(String.self,   forKey: .title)
         subtitle     = try c.decodeIfPresent(String.self, forKey: .subtitle)    ?? ""
         mediaTypeId  = try c.decodeIfPresent(String.self, forKey: .mediaTypeId) ?? ""

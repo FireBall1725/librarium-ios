@@ -131,7 +131,6 @@ struct LibrariesView: View {
     @State private var showCreate = false
     @State private var libraryToEdit: Library?
     @State private var showScanner = false
-    @State private var isbnQuery: ISBNQuery?
     @State private var showSettings = false
 
     var body: some View {
@@ -174,14 +173,15 @@ struct LibrariesView: View {
             .navigationTitle("Libraries")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showCreate = true } label: { Image(systemName: "plus") }
-                        .disabled(vm.isOffline || vm.isUnreachable)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
                     Button { showScanner = true } label: { Image(systemName: "barcode.viewfinder") }
+                        .disabled(vm.isUnreachable)
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
+                        Button { showCreate = true } label: {
+                            Label("New Library", systemImage: "plus")
+                        }
+                        .disabled(vm.isOffline || vm.isUnreachable)
                         Button { showSettings = true } label: {
                             Label("Manage Servers", systemImage: "server.rack")
                         }
@@ -196,21 +196,11 @@ struct LibrariesView: View {
             .sheet(item: $libraryToEdit) { lib in
                 EditLibrarySheet(library: lib) { updated in vm.updateLibrary(updated) }
             }
-            .sheet(isPresented: $showScanner) {
-                BarcodeScannerView(
-                    onScan: { isbn in
-                        showScanner = false
-                        Task {
-                            try? await Task.sleep(for: .milliseconds(350))
-                            isbnQuery = ISBNQuery(isbn: isbn)
-                        }
-                    },
-                    onCancel: { showScanner = false }
-                )
-                .ignoresSafeArea()
-            }
-            .sheet(item: $isbnQuery) { query in
-                ISBNResultSheet(isbn: query.isbn, libraries: vm.libraries)
+            .fullScreenCover(isPresented: $showScanner) {
+                ScanFlow(libraries: vm.libraries) {
+                    showScanner = false
+                    Task { await vm.load(appState: appState) }
+                }
             }
             .sheet(isPresented: $showSettings) {
                 AccountsSettingsSheet()
