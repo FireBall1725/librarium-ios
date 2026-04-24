@@ -132,10 +132,22 @@ struct LibrariesView: View {
     @State private var libraryToEdit: Library?
     @State private var showScanner = false
     @State private var showSettings = false
+    @State private var reauthAccount: ServerAccount?
+
+    /// First account whose tokens have been blanked. We surface a single
+    /// "Sign in again" banner above the library list rather than bouncing
+    /// the user out — the server stays put until they explicitly remove it.
+    private var pendingReauth: ServerAccount? {
+        appState.accounts.first(where: { $0.needsReauth })
+    }
 
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(spacing: 0) {
+                if let account = pendingReauth {
+                    reauthBanner(for: account)
+                }
+                Group {
                 if vm.isLoading && vm.libraries.isEmpty {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if vm.isUnreachable {
@@ -212,7 +224,42 @@ struct LibrariesView: View {
             .alert("Error", isPresented: Binding(get: { vm.error != nil }, set: { if !$0 { vm.error = nil } })) {
                 Button("OK") { vm.error = nil }
             } message: { Text(vm.error ?? "") }
+            .sheet(item: $reauthAccount) { account in
+                ReauthSheet(account: account)
+            }
+            }
         }
+    }
+
+    /// Banner that surfaces a "Sign in again" prompt at the top of the list
+    /// when the active server's tokens have been blanked. Tapping presents
+    /// the re-auth sheet.
+    @ViewBuilder
+    private func reauthBanner(for account: ServerAccount) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Sign in to \(account.name)")
+                    .font(.subheadline.weight(.semibold))
+                Text("Your session expired — sign in to keep using this server.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Sign In") { reauthAccount = account }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.orange.opacity(0.12))
+        .overlay(
+            Rectangle()
+                .frame(height: 0.5)
+                .foregroundStyle(.orange.opacity(0.4)),
+            alignment: .bottom
+        )
     }
 }
 
