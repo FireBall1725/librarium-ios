@@ -298,7 +298,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = "26.4.3-dev";
+				MARKETING_VERSION = 26.4.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "ca.fireball1725.librarium-ios";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -335,7 +335,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 26.4.2;
+				MARKETING_VERSION = 26.4.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "ca.fireball1725.librarium-ios";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
