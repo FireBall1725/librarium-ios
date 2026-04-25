@@ -160,6 +160,8 @@ struct BooksView: View {
     @State private var letterTask: Task<Void, Never>?
     @State private var pendingLetter: String?
     @State private var dragLetter: String?
+    @ScaledMetric(relativeTo: .largeTitle) private var dragOverlayFullSize: CGFloat = 64
+    @ScaledMetric(relativeTo: .largeTitle) private var dragOverlayHashSize: CGFloat = 44
 
     private static let indexLetters: [String] =
         ["#"] + (65...90).map { String(UnicodeScalar($0)!) }
@@ -295,12 +297,13 @@ struct BooksView: View {
                     .overlay {
                         if let letter = dragLetter {
                             Text(letter == "#" ? "All" : letter)
-                                .font(.system(size: letter == "#" ? 44 : 64, weight: .bold))
+                                .font(.system(size: letter == "#" ? dragOverlayHashSize : dragOverlayFullSize, weight: .bold))
                                 .foregroundStyle(.primary)
                                 .frame(minWidth: 120, minHeight: 120)
                                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
                                 .transition(.opacity.combined(with: .scale(scale: 0.85)))
                                 .allowsHitTesting(false)
+                                .accessibilityHidden(true)
                         }
                     }
                     .animation(.easeOut(duration: 0.12), value: dragLetter)
@@ -403,6 +406,7 @@ struct BooksView: View {
                 HStack(spacing: 2) {
                     tagFilterMenu
                     Button { showAdd = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add book")
                 }
             }
         }
@@ -424,6 +428,8 @@ struct BooksView: View {
         } label: {
             Image(systemName: "arrow.up.arrow.down")
         }
+        .accessibilityLabel("Sort books")
+        .accessibilityValue(vm.sortOption.label)
     }
 
     private var tagFilterMenu: some View {
@@ -455,6 +461,8 @@ struct BooksView: View {
                   : "tag")
                 .foregroundStyle(vm.selectedTag != nil ? Color.accentColor : Color.primary)
         }
+        .accessibilityLabel("Filter by tag")
+        .accessibilityValue(vm.selectedTag?.name ?? "All tags")
     }
 
     // MARK: - Helpers
@@ -525,6 +533,7 @@ private struct FilterChip: View {
             Button(action: onRemove) {
                 Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
             }
+            .accessibilityLabel("Remove filter \(label)")
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(Color(hex: color).opacity(0.15))

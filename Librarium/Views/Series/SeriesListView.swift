@@ -59,6 +59,7 @@ struct SeriesListView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { vm.showAdd = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add series")
             }
         }
         .sheet(isPresented: $vm.showAdd) {

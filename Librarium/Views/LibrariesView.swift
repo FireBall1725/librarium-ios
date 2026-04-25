@@ -187,6 +187,7 @@ struct LibrariesView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showScanner = true } label: { Image(systemName: "barcode.viewfinder") }
                         .disabled(vm.isUnreachable)
+                        .accessibilityLabel("Scan a book")
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
@@ -200,6 +201,7 @@ struct LibrariesView: View {
                     } label: {
                         Image(systemName: "person.circle")
                     }
+                    .accessibilityLabel("Account and servers")
                 }
             }
             .sheet(isPresented: $showCreate) {
@@ -545,12 +547,15 @@ struct ServerUnreachableView: View {
     let onRetry: () -> Void
     let onLogout: () -> Void
 
+    @ScaledMetric(relativeTo: .largeTitle) private var iconSize: CGFloat = 60
+
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
             Image(systemName: "wifi.slash")
-                .font(.system(size: 60))
+                .font(.system(size: iconSize))
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
 
             VStack(spacing: 8) {
                 Text("Server Unreachable")

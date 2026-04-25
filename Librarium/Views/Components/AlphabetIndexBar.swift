@@ -7,13 +7,15 @@ struct AlphabetIndexBar: View {
     @Binding var dragLetter: String?
     let onSelect: (String?) -> Void
 
+    @ScaledMetric(relativeTo: .caption2) private var letterFontSize: CGFloat = 10
+
     var body: some View {
         GeometryReader { geo in
             let rowHeight = geo.size.height / CGFloat(max(letters.count, 1))
             VStack(spacing: 0) {
                 ForEach(letters, id: \.self) { letter in
                     Text(letter)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: letterFontSize, weight: .semibold))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .foregroundStyle(color(for: letter))
                 }
@@ -35,10 +37,27 @@ struct AlphabetIndexBar: View {
                     .onEnded { _ in dragLetter = nil }
             )
         }
-        .frame(width: 18)
+        .frame(width: 28)
         .padding(.vertical, 4)
         .background(.ultraThinMaterial.opacity(0.6), in: Capsule())
         .sensoryFeedback(.selection, trigger: dragLetter)
+        .accessibilityRepresentation {
+            Picker("Jump to letter", selection: pickerBinding) {
+                Text("All").tag("#")
+                ForEach(letters.filter { $0 != "#" && availableLetters.contains($0) }, id: \.self) { letter in
+                    Text(letter).tag(letter)
+                }
+            }
+        }
+    }
+
+    private var pickerBinding: Binding<String> {
+        Binding(
+            get: { selected ?? "#" },
+            set: { newValue in
+                onSelect(newValue == "#" ? nil : newValue)
+            }
+        )
     }
 
     private func color(for letter: String) -> Color {

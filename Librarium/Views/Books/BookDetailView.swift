@@ -33,7 +33,78 @@ struct BookDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            scrollContents
+        }
+        .accessibilityHidden(isUploadingCover)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button { showEdit = true } label: { Label("Edit", systemImage: "pencil") }
+                    Button { showScanner = true } label: { Label("Scan cover", systemImage: "camera.viewfinder") }
+                    if let p = currentBook.coverUrl, !p.isEmpty {
+                        Button("Clear cover", role: .destructive) { showClearCoverConfirm = true }
+                    }
+                    Button(role: .destructive) { showDeleteConfirm = true } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("More actions")
+            }
+        }
+        .sheet(isPresented: $showEdit) {
+            AddEditBookSheet(library: library, book: currentBook) { updated in
+                currentBook = updated
+            }
+        }
+        .fullScreenCover(isPresented: $showScanner) {
+            BookCoverScannerView(
+                onScan: { image in
+                    showScanner = false
+                    Task { await uploadCover(image) }
+                },
+                onCancel: { showScanner = false }
+            )
+            .ignoresSafeArea()
+        }
+        .overlay {
+            if isUploadingCover {
+                ZStack {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                    ProgressView("Uploading cover…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .accessibilityAddTraits(.isModal)
+                .accessibilityElement(children: .contain)
+            }
+        }
+        .alert("Upload failed", isPresented: Binding(get: { uploadError != nil }, set: { if !$0 { uploadError = nil } })) {
+            Button("OK") { uploadError = nil }
+        } message: { Text(uploadError ?? "") }
+        .confirmationDialog("Clear cover for \"\(currentBook.title)\"?", isPresented: $showClearCoverConfirm, titleVisibility: .visible) {
+            Button("Clear cover", role: .destructive) {
+                Task { await clearCover() }
+            }
+        }
+        .confirmationDialog("Delete \"\(currentBook.title)\"?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    try? await BookService(client: appState.makeClient()).delete(libraryId: library.id, bookId: currentBook.id)
+                    dismiss()
+                }
+            }
+        }
+        .task {
+            await loadDetail()
+        }
+    }
+
+    private var scrollContents: some View {
+        VStack(alignment: .leading, spacing: 0) {
                 // Hero
                 HStack(alignment: .top, spacing: 16) {
                     BookCoverImage(url: coverURL, width: 90, height: 135)
@@ -123,69 +194,6 @@ struct BookDetailView: View {
                     .padding(.vertical, 12)
                 }
             }
-        }
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button { showEdit = true } label: { Label("Edit", systemImage: "pencil") }
-                    Button { showScanner = true } label: { Label("Scan cover", systemImage: "camera.viewfinder") }
-                    if let p = currentBook.coverUrl, !p.isEmpty {
-                        Button("Clear cover", role: .destructive) { showClearCoverConfirm = true }
-                    }
-                    Button(role: .destructive) { showDeleteConfirm = true } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-            }
-        }
-        .sheet(isPresented: $showEdit) {
-            AddEditBookSheet(library: library, book: currentBook) { updated in
-                currentBook = updated
-            }
-        }
-        .fullScreenCover(isPresented: $showScanner) {
-            BookCoverScannerView(
-                onScan: { image in
-                    showScanner = false
-                    Task { await uploadCover(image) }
-                },
-                onCancel: { showScanner = false }
-            )
-            .ignoresSafeArea()
-        }
-        .overlay {
-            if isUploadingCover {
-                ZStack {
-                    Color.black.opacity(0.35).ignoresSafeArea()
-                    ProgressView("Uploading cover…")
-                        .padding(20)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
-        }
-        .alert("Upload failed", isPresented: Binding(get: { uploadError != nil }, set: { if !$0 { uploadError = nil } })) {
-            Button("OK") { uploadError = nil }
-        } message: { Text(uploadError ?? "") }
-        .confirmationDialog("Clear cover for \"\(currentBook.title)\"?", isPresented: $showClearCoverConfirm, titleVisibility: .visible) {
-            Button("Clear cover", role: .destructive) {
-                Task { await clearCover() }
-            }
-        }
-        .confirmationDialog("Delete \"\(currentBook.title)\"?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                Task {
-                    try? await BookService(client: appState.makeClient()).delete(libraryId: library.id, bookId: currentBook.id)
-                    dismiss()
-                }
-            }
-        }
-        .task {
-            await loadDetail()
-        }
     }
 
     private func clearCover() async {

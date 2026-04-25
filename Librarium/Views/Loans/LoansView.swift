@@ -81,6 +81,7 @@ struct LoansView: View {
                 HStack {
                     Toggle("Active only", isOn: $vm.showActiveOnly).toggleStyle(.button).font(.caption)
                     Button { showAdd = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add loan")
                 }
             }
         }
