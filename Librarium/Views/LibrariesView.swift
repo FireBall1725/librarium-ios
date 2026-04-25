@@ -16,6 +16,7 @@ private final class LibrariesViewModel {
     var isUnreachable = false
 
     private let offlineStore = LibraryOfflineStore.shared
+    private let orderStore = LibraryOrderStore.shared
 
     func load(appState: AppState) async {
         isLoading = true; error = nil
@@ -71,8 +72,10 @@ private final class LibrariesViewModel {
                 && !freshKeys.contains($0.clientKey)
         }
 
-        let combined = (freshLibraries + cachedExtras)
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        // Apply the user-defined display order; libraries that aren't yet
+        // in the saved order (a fresh server, a just-created library) fall
+        // through to a stable alphabetical tail at the bottom.
+        let combined = orderStore.sorted(freshLibraries + cachedExtras)
 
         var states: [String: LibraryRowState] = [:]
         for lib in combined {
@@ -121,6 +124,12 @@ private final class LibrariesViewModel {
         libraries.append(lib)
         offlineStore.cacheLibrary(lib)
         libraryStates[lib.clientKey] = .online
+        orderStore.setOrder(from: libraries)
+    }
+
+    func move(fromOffsets source: IndexSet, toOffset destination: Int) {
+        libraries.move(fromOffsets: source, toOffset: destination)
+        orderStore.setOrder(from: libraries)
     }
 }
 
@@ -165,22 +174,35 @@ struct LibrariesView: View {
                         actionLabel: "New Library"
                     )
                 } else {
-                    List(vm.libraries, id: \.clientKey) { library in
-                        LibraryRow(
-                            library: library,
-                            multiServer: appState.accounts.count > 1,
-                            rowState: vm.libraryStates[library.clientKey] ?? .online
-                        )
-                            .contentShape(Rectangle())
-                            .onTapGesture { onSelect(library) }
+                    // editMode is pinned to .active so the trailing grab
+                    // handle is always visible — the user can drag a row at
+                    // any time and it persists immediately (no Edit/Done
+                    // toggle). The row content is wrapped in a Button so
+                    // taps still navigate while in edit mode; .onTapGesture
+                    // is suppressed by edit mode.
+                    List {
+                        ForEach(vm.libraries, id: \.clientKey) { library in
+                            Button {
+                                onSelect(library)
+                            } label: {
+                                LibraryRow(
+                                    library: library,
+                                    multiServer: appState.accounts.count > 1,
+                                    rowState: vm.libraryStates[library.clientKey] ?? .online
+                                )
+                            }
+                            .buttonStyle(.plain)
                             .swipeActions(edge: .leading) {
                                 Button { libraryToEdit = library } label: {
                                     Label("Edit", systemImage: "pencil")
                                 }
                                 .tint(.blue)
                             }
+                        }
+                        .onMove(perform: vm.move)
                     }
                     .listStyle(.insetGrouped)
+                    .environment(\.editMode, .constant(.active))
                 }
             }
             .navigationTitle("Libraries")
