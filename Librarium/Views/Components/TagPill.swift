@@ -8,9 +8,8 @@ struct TagPill: View {
             .font(.caption2.weight(.medium))
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Color(hex: tag.color).opacity(0.2))
-            .foregroundStyle(Color(hex: tag.color))
-            .clipShape(Capsule())
+            .background(Color.chipBackground(forTintHex: tag.color), in: Capsule())
+            .foregroundStyle(Color.chipForeground(forTintHex: tag.color))
     }
 }
 
@@ -23,9 +22,8 @@ struct TagPillSmall: View {
             .font(.caption2.weight(.medium))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Color(hex: color).opacity(0.15))
-            .foregroundStyle(Color(hex: color))
-            .clipShape(Capsule())
+            .background(Color.chipBackground(forTintHex: color, opacity: 0.15), in: Capsule())
+            .foregroundStyle(Color.chipForeground(forTintHex: color))
     }
 }
 
