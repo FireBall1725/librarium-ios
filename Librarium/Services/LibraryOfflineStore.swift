@@ -55,7 +55,23 @@ final class LibraryOfflineStore {
 
     func isEnabled(for key: String) -> Bool { enabledKeys.contains(key) }
 
+    /// True when the key is in the canonical "<serverURL>|<id>" shape — both
+    /// halves present and non-empty. Anything else (empty serverURL, missing
+    /// pipe) is a sign that the calling library was never stamped with its
+    /// server context, which collapses the key across servers when their
+    /// backend UUIDs match. Refuse the operation so we don't bake the bug
+    /// into persisted state.
+    private func validKey(_ key: String, caller: StaticString = #function) -> Bool {
+        let parts = key.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        if parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty {
+            return true
+        }
+        print("⚠️ [OfflineStore.\(caller)] refusing op on invalid key: \(key.debugDescription)")
+        return false
+    }
+
     func setEnabled(_ enabled: Bool, for key: String) {
+        guard validKey(key) else { return }
         if enabled {
             enabledKeys.insert(key)
             if bookCacheStates[key] == nil { bookCacheStates[key] = .notCached }
@@ -75,6 +91,10 @@ final class LibraryOfflineStore {
     /// called regardless of the per-library "Keep offline" opt-in so every
     /// library stays visible in the list when its server is unreachable.
     func cacheLibrary(_ library: Library) {
+        guard !library.serverURL.isEmpty else {
+            print("⚠️ [OfflineStore.cacheLibrary] refusing library with empty serverURL: id=\(library.id), name=\(library.name)")
+            return
+        }
         let key = library.clientKey
         knownKeys.insert(key)
         UserDefaults.standard.set(Array(knownKeys), forKey: "offline_known_keys")
@@ -124,6 +144,7 @@ final class LibraryOfflineStore {
 
     /// Returns cached books for a library, or nil if no cache exists.
     func cachedBooks(for key: String) -> [Book]? {
+        guard validKey(key) else { return nil }
         guard let data = try? Data(contentsOf: booksFile(key)) else { return nil }
         return try? JSONDecoder().decode([Book].self, from: data)
     }
@@ -135,6 +156,10 @@ final class LibraryOfflineStore {
     /// on every app launch. Additionally throttles fingerprint checks to once
     /// per 60 s per library so rapid navigation doesn't spam the endpoint.
     func syncBooks(for library: Library, client: APIClient) async {
+        guard !library.serverURL.isEmpty else {
+            print("⚠️ [OfflineStore.syncBooks] refusing library with empty serverURL: id=\(library.id), name=\(library.name)")
+            return
+        }
         let key = library.clientKey
         guard isEnabled(for: key) else { return }
         if case .syncing = bookCacheStates[key] { return }

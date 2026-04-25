@@ -19,7 +19,20 @@ struct Library: Codable, Identifiable, Hashable {
     /// libraries with colliding UUIDs (e.g. both started from the same seed), so
     /// anything that maintains per-library client state (SwiftUI list identity,
     /// offline caches, per-library UserDefaults keys) must key on this instead.
-    var clientKey: String { "\(serverURL)|\(id)" }
+    var clientKey: String {
+        #if DEBUG
+        if serverURL.isEmpty {
+            // We're computing a clientKey on a Library that hasn't been
+            // stamped with its server context. With cloned databases (same
+            // library UUID across two servers) this collapses both libraries
+            // onto the same key and leaks per-library settings across them.
+            // Print a stack so the offending caller can be fixed.
+            print("⚠️ [Library.clientKey] empty serverURL — id=\(id), name=\(name)")
+            for line in Thread.callStackSymbols.prefix(15) { print("  \(line)") }
+        }
+        #endif
+        return "\(serverURL)|\(id)"
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, slug, ownerId, isPublic, createdAt, updatedAt

@@ -5,6 +5,7 @@ struct AccountsSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showAddServer = false
     @State private var showSignOutConfirm = false
+    @State private var reauthAccount: ServerAccount?
 
     var body: some View {
         NavigationStack {
@@ -25,6 +26,14 @@ struct AccountsSettingsSheet: View {
                                     Label("Primary", systemImage: "star.fill")
                                 }
                                 .tint(.indigo)
+                            }
+                            if account.needsReauth {
+                                Button {
+                                    reauthAccount = account
+                                } label: {
+                                    Label("Sign In", systemImage: "key.fill")
+                                }
+                                .tint(.orange)
                             }
                         }
                         .swipeActions(edge: .trailing) {
@@ -78,6 +87,9 @@ struct AccountsSettingsSheet: View {
             .sheet(isPresented: $showAddServer) {
                 AddServerView(isFirstTime: false, onComplete: {})
             }
+            .sheet(item: $reauthAccount) { account in
+                ReauthSheet(account: account)
+            }
             .confirmationDialog(
                 "Sign out of all servers?",
                 isPresented: $showSignOutConfirm,
@@ -113,6 +125,14 @@ private struct AccountRow: View {
                             .font(.caption)
                             .foregroundStyle(.indigo)
                             .accessibilityLabel("Primary server")
+                    }
+                    if account.needsReauth {
+                        Text("Needs sign-in")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.18), in: Capsule())
+                            .foregroundStyle(.orange)
                     }
                 }
                 Text(account.url)

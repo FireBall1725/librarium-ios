@@ -101,6 +101,32 @@ final class AppState {
         }
     }
 
+    /// Blanks an account's tokens without removing the account. Used in place
+    /// of `removeAccount` whenever the server (or our local Keychain) hands
+    /// us a reason to believe the credentials are no longer valid — refresh
+    /// rejected, refresh token missing, etc. The metadata stays so the UI
+    /// can prompt for re-sign-in instead of silently bouncing the user back
+    /// to "add server".
+    func markNeedsReauth(id: UUID) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[i].accessToken = ""
+        accounts[i].refreshToken = ""
+        KeychainService.shared.delete("access_\(id.uuidString)")
+        KeychainService.shared.delete("refresh_\(id.uuidString)")
+        saveAccounts()
+    }
+
+    /// Refresh an existing account's tokens after the user has re-signed-in
+    /// through the re-auth sheet. Mirrors `addAccount` but keyed by id so
+    /// the server's URL, name, and primary-server flag stay intact.
+    func updateTokens(for id: UUID, tokens: AuthTokens) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[i].accessToken = tokens.accessToken
+        accounts[i].refreshToken = tokens.refreshToken
+        accounts[i].user = tokens.user
+        saveAccounts()
+    }
+
     func logout() {
         let urls = accounts.map { $0.url }
         for account in accounts {
@@ -164,7 +190,9 @@ final class AppState {
     func refreshToken(for accountID: UUID) async -> Bool {
         guard let account = accounts.first(where: { $0.id == accountID }),
               !account.refreshToken.isEmpty else {
-            removeAccount(id: accountID)
+            // No refresh token to spend. Don't delete — keep the metadata and
+            // mark the account as needing re-auth so the UI can prompt.
+            markNeedsReauth(id: accountID)
             return false
         }
         do {
@@ -180,18 +208,21 @@ final class AppState {
             saveAccounts()
             return true
         } catch APIError.unauthorized {
-            // Refresh token was rejected — user genuinely needs to re-auth.
-            removeAccount(id: accountID)
+            // Refresh token was rejected — needs re-auth, but keep the
+            // server. The user invariant is that only an explicit remove
+            // wipes a server.
+            markNeedsReauth(id: accountID)
             return false
         } catch let APIError.serverError(code, _) where code == 403 {
-            // 403 from the auth endpoint is also a definitive rejection.
-            removeAccount(id: accountID)
+            // 403 from the auth endpoint is also a definitive rejection —
+            // same handling as 401.
+            markNeedsReauth(id: accountID)
             return false
         } catch {
             // Transient failure (network unreachable, 5xx, decode, timeout).
-            // Keep the account — previously we deleted it on any error here,
-            // which made servers silently disappear whenever the app relaunched
-            // during a brief connectivity hiccup or server cold-start.
+            // Keep the account untouched so the next try (next launch, pull
+            // to refresh) can succeed. Definitive rejections are handled by
+            // the catches above; everything else lands here.
             return false
         }
     }
@@ -201,9 +232,16 @@ final class AppState {
     private func loadAccounts() {
         guard let data = UserDefaults.standard.data(forKey: "server_accounts"),
               let metas = try? JSONDecoder().decode([ServerAccountMeta].self, from: data) else { return }
-        accounts = metas.compactMap { meta in
-            guard let access = KeychainService.shared.get("access_\(meta.id.uuidString)"),
-                  let refresh = KeychainService.shared.get("refresh_\(meta.id.uuidString)") else { return nil }
+        // Always materialise an account for every persisted metadata row, even
+        // when the Keychain doesn't return tokens. Missing tokens mean the
+        // account needs re-auth (`needsReauth == true`), not that the server
+        // should silently disappear from the list. Previously this used
+        // compactMap and dropped accounts whose Keychain tokens couldn't be
+        // read, which manifested as "open app, briefly see library, bounced
+        // to add-server" whenever the Keychain hiccupped.
+        accounts = metas.map { meta in
+            let access = KeychainService.shared.get("access_\(meta.id.uuidString)") ?? ""
+            let refresh = KeychainService.shared.get("refresh_\(meta.id.uuidString)") ?? ""
             return ServerAccount(
                 id: meta.id,
                 name: meta.name,
@@ -225,9 +263,20 @@ final class AppState {
         if let data = try? JSONEncoder().encode(metas) {
             UserDefaults.standard.set(data, forKey: "server_accounts")
         }
+        // Empty token strings flag a needs-reauth account — don't write them
+        // back to the Keychain. `markNeedsReauth` already deleted those entries
+        // and we want them to stay gone until a real sign-in lands.
         for account in accounts {
-            KeychainService.shared.set(account.accessToken,  forKey: "access_\(account.id.uuidString)")
-            KeychainService.shared.set(account.refreshToken, forKey: "refresh_\(account.id.uuidString)")
+            if account.accessToken.isEmpty {
+                KeychainService.shared.delete("access_\(account.id.uuidString)")
+            } else {
+                KeychainService.shared.set(account.accessToken, forKey: "access_\(account.id.uuidString)")
+            }
+            if account.refreshToken.isEmpty {
+                KeychainService.shared.delete("refresh_\(account.id.uuidString)")
+            } else {
+                KeychainService.shared.set(account.refreshToken, forKey: "refresh_\(account.id.uuidString)")
+            }
         }
     }
 
