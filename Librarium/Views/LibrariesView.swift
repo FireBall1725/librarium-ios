@@ -180,6 +180,12 @@ struct LibrariesView: View {
                     // toggle). The row content is wrapped in a Button so
                     // taps still navigate while in edit mode; .onTapGesture
                     // is suppressed by edit mode.
+                    //
+                    // Pinned edit mode also disables leading-edge swipe
+                    // actions (iOS reserves the gesture for delete/edit
+                    // affordances), so the "Edit library" action lives in a
+                    // long-press context menu instead — same destination,
+                    // standard iOS surface that coexists cleanly with drag.
                     List {
                         ForEach(vm.libraries, id: \.clientKey) { library in
                             Button {
@@ -192,11 +198,10 @@ struct LibrariesView: View {
                                 )
                             }
                             .buttonStyle(.plain)
-                            .swipeActions(edge: .leading) {
+                            .contextMenu {
                                 Button { libraryToEdit = library } label: {
-                                    Label("Edit", systemImage: "pencil")
+                                    Label("Edit Library", systemImage: "pencil")
                                 }
-                                .tint(.blue)
                             }
                         }
                         .onMove(perform: vm.move)
