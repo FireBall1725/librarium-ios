@@ -46,6 +46,7 @@ struct MembersView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showAdd = true } label: { Image(systemName: "person.badge.plus") }
+                    .accessibilityLabel("Add member")
             }
         }
         .sheet(isPresented: $showAdd) {

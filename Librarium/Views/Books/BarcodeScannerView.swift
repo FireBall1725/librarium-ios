@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 struct BarcodeScannerView: UIViewControllerRepresentable {
     let onScan: (String) -> Void
@@ -74,7 +75,12 @@ final class ScannerViewController: UIViewController, AVCaptureMetadataOutputObje
         guard let obj = objects.first as? AVMetadataMachineReadableCodeObject,
               let value = obj.stringValue else { return }
         captureSession?.stopRunning()
-        AudioServicesPlaySystemSound(SystemSoundID(kSystemSoundID_Vibrate))
+        // Route through the Taptic Engine so the system can suppress the
+        // haptic when the user has feedback disabled. The legacy
+        // `kSystemSoundID_Vibrate` ignored that preference.
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.success)
         onScan?(value)
     }
 

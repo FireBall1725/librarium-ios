@@ -5,6 +5,7 @@ struct SplashView: View {
     let onDismiss: () -> Void
 
     @State private var opacity: Double = 1
+    @ScaledMetric(relativeTo: .largeTitle) private var logoSize: CGFloat = 80
 
     private var appVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
@@ -18,9 +19,10 @@ struct SplashView: View {
 
             VStack(spacing: 12) {
                 Image(systemName: "books.vertical.fill")
-                    .font(.system(size: 80))
+                    .font(.system(size: logoSize))
                     .foregroundStyle(.tint)
                     .padding(.bottom, 8)
+                    .accessibilityHidden(true)
 
                 Text("Welcome back")
                     .font(.title3)

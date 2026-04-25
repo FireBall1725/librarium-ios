@@ -51,6 +51,7 @@ struct ShelvesView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showAdd = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add shelf")
             }
         }
         .sheet(isPresented: $showAdd) {
