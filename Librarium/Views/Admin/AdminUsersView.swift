@@ -2,7 +2,7 @@ import SwiftUI
 
 struct AdminUsersView: View {
     @Environment(AppState.self) private var appState
-    @Environment(\.libraryBack) private var onBack
+    @Environment(\.dismiss) private var dismiss
     @State private var users: [AdminUser] = []
     @State private var isLoading = false
     @State private var showAdd = false
@@ -44,19 +44,17 @@ struct AdminUsersView: View {
         }
         .navigationTitle("Users")
         .toolbar {
-            if let onBack {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onBack) {
-                        HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("Libraries") }
-                    }
-                }
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Done") { dismiss() }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack {
                     NavigationLink(destination: AdminSettingsView()) {
                         Image(systemName: "gear")
                     }
+                    .accessibilityLabel("Admin settings")
                     Button { showAdd = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add user")
                 }
             }
         }

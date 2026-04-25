@@ -132,6 +132,7 @@ struct LibrariesView: View {
     @State private var libraryToEdit: Library?
     @State private var showScanner = false
     @State private var showSettings = false
+    @State private var showAdmin = false
     @State private var reauthAccount: ServerAccount?
 
     /// First account whose tokens have been blanked. We surface a single
@@ -198,6 +199,12 @@ struct LibrariesView: View {
                         Button { showSettings = true } label: {
                             Label("Manage Servers", systemImage: "server.rack")
                         }
+                        if appState.currentUser?.isInstanceAdmin == true {
+                            Divider()
+                            Button { showAdmin = true } label: {
+                                Label("Admin", systemImage: "shield")
+                            }
+                        }
                     } label: {
                         Image(systemName: "person.circle")
                     }
@@ -218,6 +225,9 @@ struct LibrariesView: View {
             }
             .sheet(isPresented: $showSettings) {
                 AccountsSettingsSheet()
+            }
+            .sheet(isPresented: $showAdmin) {
+                NavigationStack { AdminUsersView() }
             }
             .task { await vm.load(appState: appState) }
             .refreshable { await vm.load(appState: appState) }

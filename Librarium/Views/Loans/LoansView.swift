@@ -21,7 +21,6 @@ private final class LoansViewModel {
 struct LoansView: View {
     let library: Library
     @Environment(AppState.self) private var appState
-    @Environment(\.libraryBack) private var onBack
     @State private var vm = LoansViewModel()
     @State private var showAdd = false
     @State private var editingLoan: Loan?
@@ -70,13 +69,7 @@ struct LoansView: View {
         }
         .navigationTitle("Loans")
         .toolbar {
-            if let onBack {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onBack) {
-                        HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("Libraries") }
-                    }
-                }
-            }
+            ToolbarItem(placement: .topBarLeading) { LibraryBackButton() }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack {
                     Toggle("Active only", isOn: $vm.showActiveOnly).toggleStyle(.button).font(.caption)
