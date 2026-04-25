@@ -101,13 +101,11 @@ private struct LoanRow: View {
                 Text(loan.bookTitle).font(.headline).lineLimit(1)
                 Spacer()
                 if loan.isActive {
-                    Text("Active").font(.caption2.weight(.medium))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.green.opacity(0.15)).foregroundStyle(.green).clipShape(Capsule())
+                    ChipView(label: "Active", size: .xsmall,
+                             foreground: .green, background: .green.opacity(0.15))
                 } else {
-                    Text("Returned").font(.caption2.weight(.medium))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.secondary.opacity(0.15)).foregroundStyle(.secondary).clipShape(Capsule())
+                    ChipView(label: "Returned", size: .xsmall,
+                             foreground: .secondary, background: .secondary.opacity(0.15))
                 }
             }
             Text("Loaned to \(loan.loanedTo)").font(.subheadline).foregroundStyle(.secondary)

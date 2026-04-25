@@ -71,11 +71,12 @@ private struct MemberRow: View {
                 Text(member.email).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Text(member.role.replacingOccurrences(of: "library_", with: "").capitalized)
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(.tint.opacity(0.1)).foregroundStyle(.tint)
-                .clipShape(Capsule())
+            ChipView(
+                label: member.role.replacingOccurrences(of: "library_", with: "").capitalized,
+                size: .small,
+                foreground: .accentColor,
+                background: Color.accentColor.opacity(0.12)
+            )
         }
     }
 }

@@ -529,9 +529,8 @@ private struct FilterChip: View {
             .accessibilityLabel("Remove filter \(label)")
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(Color(hex: color).opacity(0.15))
-        .foregroundStyle(Color(hex: color))
-        .clipShape(Capsule())
+        .background(Color.chipBackground(forTintHex: color, opacity: 0.15), in: Capsule())
+        .foregroundStyle(Color.chipForeground(forTintHex: color))
     }
 }
 
