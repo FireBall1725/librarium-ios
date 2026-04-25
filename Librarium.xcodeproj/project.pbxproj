@@ -8,11 +8,28 @@
 
 /* Begin PBXBuildFile section */
 		00CB09DE2F8B98A60018CA13 /* AudioToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 00CB09DD2F8B98A60018CA13 /* AudioToolbox.framework */; };
+		36318A62861A160EE562A569 /* LibraryOrderStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A95A0F1EA1AA0B0A9A2D501 /* LibraryOrderStoreTests.swift */; };
+		7878506E6651377FA2979B78 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74B9EAFCC11908F2485DCC44 /* Foundation.framework */; };
+		B1AE2F969FFCBAE89ADC84B6 /* NormalizeServerURLTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B112BD5E7841F2F203A2A58 /* NormalizeServerURLTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E3C30DA3C98FD022FF4A7B00 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 00CB09412F8B901D0018CA13 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 00CB09482F8B901D0018CA13;
+			remoteInfo = Librarium;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		00CB09492F8B901D0018CA13 /* Librarium.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Librarium.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		00CB09DD2F8B98A60018CA13 /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
+		0B112BD5E7841F2F203A2A58 /* NormalizeServerURLTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NormalizeServerURLTests.swift; sourceTree = "<group>"; };
+		74B9EAFCC11908F2485DCC44 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		97099F52E3F070DABEB9ADCD /* LibrariumTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LibrariumTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		9A95A0F1EA1AA0B0A9A2D501 /* LibraryOrderStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibraryOrderStoreTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -45,6 +62,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A07F26AC7080FB1CE8BAFDA7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7878506E6651377FA2979B78 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -54,6 +79,7 @@
 				00CB094B2F8B901D0018CA13 /* Librarium */,
 				00CB09DC2F8B98A60018CA13 /* Frameworks */,
 				00CB094A2F8B901D0018CA13 /* Products */,
+				14038C87554C07F4E3CA9BAF /* LibrariumTests */,
 			);
 			sourceTree = "<group>";
 		};
@@ -61,6 +87,7 @@
 			isa = PBXGroup;
 			children = (
 				00CB09492F8B901D0018CA13 /* Librarium.app */,
+				97099F52E3F070DABEB9ADCD /* LibrariumTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -69,8 +96,27 @@
 			isa = PBXGroup;
 			children = (
 				00CB09DD2F8B98A60018CA13 /* AudioToolbox.framework */,
+				7DDE0B79593FF94090456F5A /* iOS */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		14038C87554C07F4E3CA9BAF /* LibrariumTests */ = {
+			isa = PBXGroup;
+			children = (
+				9A95A0F1EA1AA0B0A9A2D501 /* LibraryOrderStoreTests.swift */,
+				0B112BD5E7841F2F203A2A58 /* NormalizeServerURLTests.swift */,
+			);
+			name = LibrariumTests;
+			path = LibrariumTests;
+			sourceTree = SOURCE_ROOT;
+		};
+		7DDE0B79593FF94090456F5A /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				74B9EAFCC11908F2485DCC44 /* Foundation.framework */,
+			);
+			name = iOS;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -92,11 +138,27 @@
 				00CB094B2F8B901D0018CA13 /* Librarium */,
 			);
 			name = Librarium;
-			packageProductDependencies = (
-			);
 			productName = Librarium;
 			productReference = 00CB09492F8B901D0018CA13 /* Librarium.app */;
 			productType = "com.apple.product-type.application";
+		};
+		E6869F235F22A3B687E65D4D /* LibrariumTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5BF21EC767FD92753EA155D2 /* Build configuration list for PBXNativeTarget "LibrariumTests" */;
+			buildPhases = (
+				DF9E9C99B9B971DDEE6E7A1D /* Sources */,
+				A07F26AC7080FB1CE8BAFDA7 /* Frameworks */,
+				D3CE804CEBAA49C5123978DF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0CB72FEAE951000C32E4CA0F /* PBXTargetDependency */,
+			);
+			name = LibrariumTests;
+			productName = LibrariumTests;
+			productReference = 97099F52E3F070DABEB9ADCD /* LibrariumTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -128,12 +190,20 @@
 			projectRoot = "";
 			targets = (
 				00CB09482F8B901D0018CA13 /* Librarium */,
+				E6869F235F22A3B687E65D4D /* LibrariumTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		00CB09472F8B901D0018CA13 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D3CE804CEBAA49C5123978DF /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -150,7 +220,25 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DF9E9C99B9B971DDEE6E7A1D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				36318A62861A160EE562A569 /* LibraryOrderStoreTests.swift in Sources */,
+				B1AE2F969FFCBAE89ADC84B6 /* NormalizeServerURLTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0CB72FEAE951000C32E4CA0F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = Librarium;
+			target = 00CB09482F8B901D0018CA13 /* Librarium */;
+			targetProxy = E3C30DA3C98FD022FF4A7B00 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		00CB09522F8B901E0018CA13 /* Debug */ = {
@@ -348,6 +436,41 @@
 			};
 			name = Release;
 		};
+		00F0D5D8D1177992788A3FE5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ca.fireball1725.LibrariumTests;
+				PRODUCT_NAME = LibrariumTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Librarium.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Librarium";
+			};
+			name = Debug;
+		};
+		98A01CFEB5D1EAFEF9D86829 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ca.fireball1725.LibrariumTests;
+				PRODUCT_NAME = LibrariumTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Librarium.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Librarium";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -365,6 +488,15 @@
 			buildConfigurations = (
 				00CB09552F8B901E0018CA13 /* Debug */,
 				00CB09562F8B901E0018CA13 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5BF21EC767FD92753EA155D2 /* Build configuration list for PBXNativeTarget "LibrariumTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				98A01CFEB5D1EAFEF9D86829 /* Release */,
+				00F0D5D8D1177992788A3FE5 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
