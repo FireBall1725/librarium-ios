@@ -392,15 +392,8 @@ struct BooksView: View {
                 }
             }
         } else {
-            if let onBack {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onBack) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                            Text("Libraries")
-                        }
-                    }
-                }
+            ToolbarItem(placement: .topBarLeading) {
+                LibraryBackButton()
             }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 2) {

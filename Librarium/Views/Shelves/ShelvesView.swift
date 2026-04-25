@@ -16,7 +16,6 @@ private final class ShelvesViewModel {
 struct ShelvesView: View {
     let library: Library
     @Environment(AppState.self) private var appState
-    @Environment(\.libraryBack) private var onBack
     @State private var vm = ShelvesViewModel()
     @State private var showAdd = false
     @State private var selectedShelf: Shelf?
@@ -42,13 +41,7 @@ struct ShelvesView: View {
         }
         .navigationTitle("Shelves")
         .toolbar {
-            if let onBack {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onBack) {
-                        HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("Libraries") }
-                    }
-                }
-            }
+            ToolbarItem(placement: .topBarLeading) { LibraryBackButton() }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showAdd = true } label: { Image(systemName: "plus") }
                     .accessibilityLabel("Add shelf")

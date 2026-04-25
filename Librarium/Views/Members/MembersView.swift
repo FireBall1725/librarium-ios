@@ -3,7 +3,6 @@ import SwiftUI
 struct MembersView: View {
     let library: Library
     @Environment(AppState.self) private var appState
-    @Environment(\.libraryBack) private var onBack
     @State private var members: [LibraryMember] = []
     @State private var isLoading = false
     @State private var showAdd = false
@@ -37,13 +36,7 @@ struct MembersView: View {
         }
         .navigationTitle("Members")
         .toolbar {
-            if let onBack {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onBack) {
-                        HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("Libraries") }
-                    }
-                }
-            }
+            ToolbarItem(placement: .topBarLeading) { LibraryBackButton() }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showAdd = true } label: { Image(systemName: "person.badge.plus") }
                     .accessibilityLabel("Add member")

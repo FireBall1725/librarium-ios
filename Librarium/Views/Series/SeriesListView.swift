@@ -24,7 +24,6 @@ private final class SeriesListViewModel {
 struct SeriesListView: View {
     let library: Library
     @Environment(AppState.self) private var appState
-    @Environment(\.libraryBack) private var onBack
     @State private var vm = SeriesListViewModel()
     @State private var selectedSeries: Series?
 
@@ -50,13 +49,7 @@ struct SeriesListView: View {
         }
         .navigationTitle("Series")
         .toolbar {
-            if let onBack {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onBack) {
-                        HStack(spacing: 4) { Image(systemName: "chevron.left"); Text("Libraries") }
-                    }
-                }
-            }
+            ToolbarItem(placement: .topBarLeading) { LibraryBackButton() }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { vm.showAdd = true } label: { Image(systemName: "plus") }
                     .accessibilityLabel("Add series")

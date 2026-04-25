@@ -36,14 +36,6 @@ struct LibraryTabView: View {
             }
             .environment(\.libraryBack, onBack)
             .tabItem { Label("Members", systemImage: "person.2") }
-
-            if appState.currentUser?.isInstanceAdmin == true {
-                NavigationStack {
-                    AdminUsersView()
-                }
-                .environment(\.libraryBack, onBack)
-                .tabItem { Label("Admin", systemImage: "shield") }
-            }
         }
         .onAppear { appState.setActiveAccount(for: library) }
     }
