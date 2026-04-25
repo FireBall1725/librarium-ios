@@ -4,11 +4,9 @@ import SwiftUI
 /// selectedLibrary drives navigation from library list → library detail without nested NavigationStacks.
 struct ContentView: View {
     @Environment(AppState.self) private var appState
-    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedLibrary: Library?
     @State private var showSplash = true
-    @State private var splashKey = UUID()
 
     var body: some View {
         ZStack {
@@ -16,14 +14,7 @@ struct ContentView: View {
 
             if showSplash, let user = appState.currentUser {
                 SplashView(user: user) { showSplash = false }
-                    .id(splashKey)
                     .zIndex(1)
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active, appState.isAuthenticated {
-                splashKey = UUID()
-                showSplash = true
             }
         }
     }
