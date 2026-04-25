@@ -21,15 +21,56 @@ struct ReauthSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
+            Form {
+                Section {
                     header
-                    fields
                 }
-                .padding()
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+
+                Section("Sign in") {
+                    TextField("Username or email", text: $identifier)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(.username)
+                        .focused($focusedField, equals: .identifier)
+                        .onSubmit { focusedField = .password }
+                        .submitLabel(.next)
+
+                    SecureField("Password", text: $password)
+                        .textContentType(.password)
+                        .focused($focusedField, equals: .password)
+                        .onSubmit { signIn() }
+                        .submitLabel(.go)
+                }
+
+                if let error = errorMessage {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                            .font(.footnote)
+                    }
+                }
+
+                Section {
+                    Button(action: signIn) {
+                        HStack {
+                            Spacer()
+                            if isLoading {
+                                ProgressView()
+                            } else {
+                                Text("Sign In").fontWeight(.semibold)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!canSubmit)
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
             }
-            .contentShape(Rectangle())
-            .onTapGesture { focusedField = nil }
             .navigationTitle("Sign In Again")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -53,6 +94,7 @@ struct ReauthSheet: View {
             Image(systemName: "key.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(.tint)
+                .accessibilityHidden(true)
             Text(account.name)
                 .font(.title2.bold())
             Text(account.url)
@@ -67,53 +109,8 @@ struct ReauthSheet: View {
                 .padding(.top, 4)
                 .padding(.horizontal)
         }
-    }
-
-    private var fields: some View {
-        VStack(spacing: 12) {
-            TextField("Username or email", text: $identifier)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textContentType(.username)
-                .focused($focusedField, equals: .identifier)
-                .onSubmit { focusedField = .password }
-                .submitLabel(.next)
-                .padding()
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-
-            SecureField("Password", text: $password)
-                .textContentType(.password)
-                .focused($focusedField, equals: .password)
-                .onSubmit { signIn() }
-                .submitLabel(.go)
-                .padding()
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-
-            if let error = errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 4)
-            }
-
-            Button(action: signIn) {
-                Group {
-                    if isLoading {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text("Sign In").fontWeight(.semibold)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.accentColor)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .opacity(canSubmit ? 1 : 0.4)
-            }
-            .disabled(!canSubmit)
-        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
     }
 
     private var canSubmit: Bool {
