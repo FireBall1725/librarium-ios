@@ -214,16 +214,13 @@ struct ScanResultScreen: View {
         }
     }
 
-    /// Primary-server libraries first, then alphabetical within each server.
+    /// User-defined order from the Libraries screen, applied here too so the
+    /// scan sheet matches the list the user already arranged. Primary-server
+    /// precedence used to anchor the top, but the user's drag order now wins
+    /// — the primary account still drives ISBN-lookup routing, it just no
+    /// longer dictates row position.
     private var sortedLibraries: [Library] {
-        let primaryURL = appState.primaryAccount?.url
-        return libraries.sorted { a, b in
-            let aPrimary = a.serverURL == primaryURL
-            let bPrimary = b.serverURL == primaryURL
-            if aPrimary != bPrimary { return aPrimary }
-            if a.serverURL != b.serverURL { return a.serverURL < b.serverURL }
-            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-        }
+        LibraryOrderStore.shared.sorted(libraries)
     }
 
     @ViewBuilder
