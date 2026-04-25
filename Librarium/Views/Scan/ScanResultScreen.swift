@@ -184,7 +184,7 @@ struct ScanResultScreen: View {
                 .padding(.horizontal, 16)
 
             VStack(spacing: 0) {
-                ForEach(sortedLibraries) { library in
+                ForEach(sortedLibraries, id: \.clientKey) { library in
                     LibraryScanRow(
                         library: library,
                         showServerName: appState.accounts.count > 1,
@@ -203,7 +203,7 @@ struct ScanResultScreen: View {
                             }
                         }
                     )
-                    if library.id != sortedLibraries.last?.id {
+                    if library.clientKey != sortedLibraries.last?.clientKey {
                         Divider().padding(.leading, 16)
                     }
                 }
