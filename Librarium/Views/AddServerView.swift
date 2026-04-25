@@ -300,7 +300,14 @@ func normalizeServerURL(_ raw: String) -> String? {
         return nil
     }
     if components.scheme == nil { components.scheme = "https" }
-    components.path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    // Strip *trailing* slashes only — `/` as a leading character is part
+    // of any non-empty path and URLComponents requires it. The earlier
+    // `trimmingCharacters(in:)` form ate `/api` down to `api`, which
+    // then failed to serialize at all.
+    while components.path.count > 1 && components.path.hasSuffix("/") {
+        components.path.removeLast()
+    }
+    if components.path == "/" { components.path = "" }
     guard let host = components.host, !host.isEmpty else { return nil }
     return components.string
 }
