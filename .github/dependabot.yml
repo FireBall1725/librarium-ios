@@ -1,0 +1,23 @@
+# Dependabot — automated dep update PRs.
+# Swift Package Manager dependabot exists but coverage is limited and
+# the iOS app's deps churn slowly. Watching workflow actions is still
+# worthwhile for security / maintained-status updates.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    labels: ["dependencies"]
+    groups:
+      ci-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: swift
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]

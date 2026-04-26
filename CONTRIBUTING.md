@@ -18,28 +18,28 @@ If you forget: `git commit --amend -s --no-edit` for one commit, or `git rebase 
 
 - Xcode 16.0 or later
 - macOS 14.0 (Sonoma) or later
-- An iOS 17+ simulator or physical device for testing
+- An iOS 26+ simulator or physical device for testing
 - An Apple Developer account if running on a physical device
 
 ## Setting Up
 
 1. Fork the repository and clone your fork.
 2. Open `Librarium/Librarium.xcodeproj` in Xcode.
-3. Select the **Librarium** scheme and an iOS 17+ simulator.
+3. Select the **Librarium** scheme and an iOS 26+ simulator.
 4. Press **⌘R** to build and run.
 
 ### Signing for your own builds
 
 The project has the maintainer's Apple Developer Team ID (`DEVELOPMENT_TEAM`) committed so the TestFlight CI pipeline works. If you want to build and run on a **physical device** from your fork, change `DEVELOPMENT_TEAM` in **Signing & Capabilities** → **Team** to your own team, or edit it in `Librarium.xcodeproj/project.pbxproj`. Don't commit that change back in a PR — leave it as a local-only edit. Simulator builds don't require a team and work unchanged.
 
-You will need a running [librarium-api](https://github.com/fireball1725/librarium-api) instance to test against. The easiest way is to run the API locally via Docker:
+You will need a running [librarium-api](https://github.com/fireball1725/librarium-api) instance to test against. Run the umbrella dev stack (api + web + db + mcp):
 
 ```bash
-# from the librarium-api directory
-docker compose up
+# from the librarium workspace
+cd local && docker compose up -d --build
 ```
 
-Then enter `http://localhost:8080` as the server URL in the app.
+Then enter `http://<your-mac-ip>:8080` as the server URL in the app (using your machine's LAN IP, not `localhost`, so it works from a physical device on the same network).
 
 ## Code Style
 
@@ -76,9 +76,11 @@ Then enter `http://localhost:8080` as the server URL in the app.
 
 ## Pull Requests
 
-- Fill out the pull request template completely.
-- Link any related issues with `Closes #123` or `Fixes #123`.
-- Screenshots or screen recordings are encouraged for UI changes.
+- Title carries the weight — it feeds the auto-generated release notes.
+- Body: 1–2 terse bullets explaining the why; no Summary/Test plan headers.
+- Link related issues with `Closes #123` or `Fixes #123`.
+- Screenshots or screen recordings encouraged for UI changes.
+- Don't bump `MARKETING_VERSION` in `pbxproj` — `release.yml` owns that.
 - PRs that break the build or introduce force unwraps will be asked to revise.
 
 The maintainer reviews PRs as time allows. Inclusion is not guaranteed.
