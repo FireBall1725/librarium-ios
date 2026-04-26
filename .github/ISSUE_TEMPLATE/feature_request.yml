@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a new feature or workflow improvement for the iOS app
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests are welcome. Check existing issues + [PLAN.md](https://github.com/fireball1725/librarium/blob/main/PLAN.md) before submitting to avoid duplicates.
+
+        If your idea spans the API, web, or MCP servers too, file it on the umbrella [librarium](https://github.com/fireball1725/librarium/issues) repo instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case or pain point.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you'd like the iOS app to do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Mockups / screenshots / similar apps
+    validations:
+      required: false
