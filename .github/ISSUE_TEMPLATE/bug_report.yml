@@ -1,0 +1,101 @@
+name: Bug report
+description: Something isn't working as expected in the Librarium iOS app
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The iOS app talks to a Librarium API server, so the
+        **API version** is just as important as the iOS build — most behaviour bugs
+        live on the API side. Both versions are visible in the app's Profile screen.
+
+  - type: input
+    id: ios_app_version
+    attributes:
+      label: iOS app version
+      description: From the Profile screen footer (e.g. `Librarium 26.4.2 (1138)`)
+      placeholder: "e.g. 26.4.2 (1138)"
+    validations:
+      required: true
+
+  - type: input
+    id: api_version
+    attributes:
+      label: API version
+      description: From the Profile screen — which server you're connected to
+      placeholder: "e.g. 26.4.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: How is the app installed?
+      options:
+        - TestFlight
+        - Xcode dev build (sideloaded)
+        - App Store
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: ios_version
+    attributes:
+      label: iOS version
+      placeholder: "e.g. iOS 26.1"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      placeholder: "e.g. iPhone 15 Pro / iPad Air M2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the app
+        2. Tap …
+        3. See …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot or screen recording
+      description: Drag-and-drop. A screen recording of the bug usually saves a lot of triage time.
+    validations:
+      required: false
+
+  - type: textarea
+    id: crash_log
+    attributes:
+      label: Crash log (if applicable)
+      description: |
+        For crashes — Settings → Privacy & Security → Analytics & Improvements →
+        Analytics Data → find a `Librarium-…` entry → Share. Paste the top of the
+        log here, or attach the file.
+      render: text
+    validations:
+      required: false
