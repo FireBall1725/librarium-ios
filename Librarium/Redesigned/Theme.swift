@@ -49,27 +49,40 @@ enum Theme {
 
     // MARK: - Type stack
 
-    /// Font family names map to mockup's `--font-*` CSS vars. The
-    /// `custom(_:size:)` calls fall through to the system serif when the
-    /// PostScript name isn't registered — fine for development, swap once
-    /// the .ttf files are in the bundle.
+    /// Editorial fonts shipped as bundled `.ttf` files (UIAppFonts in
+    /// Info.plist). The PostScript names below map to the family+style
+    /// names of the bundled files.
+    ///
+    /// **Cormorant Garamond** — static cuts: Regular / Medium / SemiBold / Bold.
+    /// **Crimson Pro** — variable font, weight axis. We pick a static
+    /// weight at the call site by referring to "CrimsonPro" (the family
+    /// name) + applying `.weight()`; SwiftUI maps that to the variable axis.
+    /// **Cinzel** — variable font, weight axis. Same pattern.
     enum Fonts {
-        // Editorial display — Cormorant Garamond. From 17px up.
+        // Editorial display — Cormorant Garamond.
         static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-            Font.custom("CormorantGaramond-SemiBold", size: size, relativeTo: .title)
-                .weight(weight)
+            let face: String = {
+                switch weight {
+                case .bold, .heavy, .black: return "CormorantGaramond-Bold"
+                case .semibold:             return "CormorantGaramond-SemiBold"
+                case .medium:               return "CormorantGaramond-Medium"
+                default:                    return "CormorantGaramond-Regular"
+                }
+            }()
+            return Font.custom(face, size: size, relativeTo: .title)
         }
 
-        // Body serif — Crimson Pro. Long-form prose.
+        // Body serif — Crimson Pro variable font.
         static func bodySerif(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-            Font.custom("CrimsonPro-Regular", size: size, relativeTo: .body)
+            Font.custom("CrimsonPro", size: size, relativeTo: .body)
                 .weight(weight)
         }
 
-        // Small-caps label — Cinzel. Always uppercase + letter-spaced.
-        // Use ``.tracking(0.14 × size in em)`` or set via the call site.
-        static func label(_ size: CGFloat) -> Font {
-            Font.custom("Cinzel-SemiBold", size: size, relativeTo: .caption)
+        // Small-caps label — Cinzel variable font. Always uppercase +
+        // letter-spaced. Use ``.tracking(...)`` at the call site.
+        static func label(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+            Font.custom("Cinzel", size: size, relativeTo: .caption)
+                .weight(weight)
         }
 
         // UI workhorse — SF Pro. Default for chrome, dense rows, numbers.

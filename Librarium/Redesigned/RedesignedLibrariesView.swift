@@ -22,6 +22,10 @@ struct RedesignedLibrariesView: View {
     @State private var libraries: [Library] = []
     @State private var isLoading = true
     @State private var error: String?
+    /// First 3 cover URLs per library, keyed by clientKey. Loaded
+    /// after the library list arrives — empty until then, so cards
+    /// render with placeholder rectangles initially.
+    @State private var libraryCovers: [String: [URL]] = [:]
 
     var body: some View {
         NavigationStack {
@@ -47,31 +51,36 @@ struct RedesignedLibrariesView: View {
 
     @ViewBuilder
     private var header: some View {
-        ZStack(alignment: .topTrailing) {
-            VStack(alignment: .leading, spacing: 4) {
+        // HStack with bottom alignment so the + button sits aligned with
+        // the H1 baseline, matching the mockup's nav-large layout
+        // (.actions is absolutely-positioned at top:64px which lands the
+        // glyph roughly at the title row).
+        HStack(alignment: .bottom, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Librarium · Home")
-                    .font(Theme.Fonts.label(11))
-                    .tracking(1.6)
+                    .font(Theme.Fonts.ui(12, weight: .medium))
+                    .tracking(1.0)
                     .foregroundStyle(Theme.Colors.appText3)
                     .textCase(.uppercase)
                 Text("Libraries")
                     .font(Theme.Fonts.pageTitle)
                     .foregroundStyle(Theme.Colors.appText)
             }
-
-            // Placeholder + button — no-op for v1, hookup later
+            Spacer()
+            // Mockup .nav-icon-btn — 38pt glass circle, indigo accent.
             Button(action: {}) {
                 Image(systemName: "plus")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.appText2)
-                    .frame(width: 44, height: 44)
-                    .background(Theme.Colors.appLine, in: Circle())
+                    .foregroundStyle(Theme.Colors.accent)
+                    .frame(width: 38, height: 38)
+                    .background(Color.white.opacity(0.08), in: Circle())
+                    .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
             }
-            .opacity(0.6)
+            .padding(.bottom, 4)
         }
         .padding(.horizontal, 22)
         .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.bottom, 14)
     }
 
     // MARK: - Grid
@@ -93,7 +102,8 @@ struct RedesignedLibrariesView: View {
                         isPrimary: appState.primaryAccountID == account(for: libraries[0])?.id,
                         showServerName: appState.accounts.count > 1,
                         layout: .full,
-                        theme: theme(for: 0)
+                        theme: theme(for: 0),
+                        coverURLs: libraryCovers[libraries[0].clientKey] ?? []
                     )
                 }
                 .buttonStyle(.plain)
@@ -110,7 +120,8 @@ struct RedesignedLibrariesView: View {
                                     isPrimary: appState.primaryAccountID == account(for: lib)?.id,
                                     showServerName: appState.accounts.count > 1,
                                     layout: .compact,
-                                    theme: theme(for: idx + 1)
+                                    theme: theme(for: idx + 1),
+                                    coverURLs: libraryCovers[lib.clientKey] ?? []
                                 )
                             }
                             .buttonStyle(.plain)
@@ -206,6 +217,35 @@ struct RedesignedLibrariesView: View {
         if libraries.isEmpty, let firstError {
             error = firstError
         }
+
+        await loadCovers()
+    }
+
+    /// Fan out per-library `?per_page=3` requests in parallel to populate
+    /// the cover stack. Best-effort — failures leave that library's stack
+    /// rendering placeholder rectangles.
+    private func loadCovers() async {
+        let libs = libraries
+        await withTaskGroup(of: (String, [URL]).self) { group in
+            for lib in libs {
+                group.addTask {
+                    let client = await appState.makeClient(serverURL: lib.serverURL)
+                    do {
+                        let page = try await BookService(client: client).list(libraryId: lib.id, perPage: 3)
+                        let urls = page.items.compactMap { book -> URL? in
+                            guard let path = book.coverUrl, !path.isEmpty else { return nil }
+                            return URL(string: lib.serverURL + path)
+                        }
+                        return (lib.clientKey, urls)
+                    } catch {
+                        return (lib.clientKey, [])
+                    }
+                }
+            }
+            for await (key, urls) in group where !urls.isEmpty {
+                libraryCovers[key] = urls
+            }
+        }
     }
 }
 
@@ -262,25 +302,28 @@ private struct LibraryCard: View {
     let showServerName: Bool
     let layout: LibraryCardLayout
     let theme: LibraryCardTheme
+    let coverURLs: [URL]
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            // Fanned cover stack — sits in the top-right corner, behind text
-            CoverStack(colors: theme.stackColors)
+            // Fanned cover stack — sits in the top-right corner, behind
+            // text. Real covers when available, themed placeholder rects
+            // otherwise.
+            CoverStack(coverURLs: coverURLs, fallbackColors: theme.stackColors)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .opacity(0.7)
+                .opacity(0.85)
 
             // Foreground content
             VStack(alignment: .leading, spacing: 4) {
                 Spacer()
                 Text(library.name)
                     .font(layout == .full
-                          ? .system(size: 22, weight: .semibold)
-                          : .system(size: 16, weight: .semibold))
+                          ? Theme.Fonts.display(22, weight: .semibold)
+                          : Theme.Fonts.display(18, weight: .semibold))
                     .foregroundStyle(Theme.Colors.appText)
                     .lineLimit(2)
                 Text(countLine)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(Theme.Fonts.ui(13, weight: .medium))
                     .foregroundStyle(Theme.Colors.appText2)
                     .monospacedDigit()
                 if showServerName, !library.serverName.isEmpty {
@@ -345,7 +388,8 @@ private struct LibraryCard: View {
 // MARK: - Fanned cover stack
 
 private struct CoverStack: View {
-    let colors: [Color]
+    let coverURLs: [URL]
+    let fallbackColors: [Color]
 
     var body: some View {
         // Three rounded rects, each rotated/offset to fan out from the
@@ -357,18 +401,15 @@ private struct CoverStack: View {
             let coverH = coverW * 1.5
 
             ZStack {
-                cover(color: colors[2])
-                    .frame(width: coverW, height: coverH)
+                slot(at: 2, w: coverW, h: coverH)
                     .rotationEffect(.degrees(-12))
                     .offset(x: -coverW * 0.55, y: coverH * 0.18)
 
-                cover(color: colors[0])
-                    .frame(width: coverW, height: coverH)
+                slot(at: 0, w: coverW, h: coverH)
                     .rotationEffect(.degrees(8))
                     .offset(x: 0, y: coverH * 0.12)
 
-                cover(color: colors[1])
-                    .frame(width: coverW, height: coverH)
+                slot(at: 1, w: coverW, h: coverH)
                     .rotationEffect(.degrees(-3))
                     .offset(x: -coverW * 0.28, y: 0)
             }
@@ -378,14 +419,23 @@ private struct CoverStack: View {
         .padding(12)
     }
 
+    /// Picks the URL at `idx` if we have one, else falls back to the
+    /// themed colour at the same index. Indices are wrapped so we
+    /// always render 3 visual slots even with fewer real covers.
     @ViewBuilder
-    private func cover(color: Color) -> some View {
-        RoundedRectangle(cornerRadius: 4)
-            .fill(color)
-            .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
-            )
-            .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
+    private func slot(at idx: Int, w: CGFloat, h: CGFloat) -> some View {
+        if idx < coverURLs.count {
+            BookCoverImage(url: coverURLs[idx], width: w, height: h)
+                .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
+        } else {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(fallbackColors[idx % fallbackColors.count])
+                .frame(width: w, height: h)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
+        }
     }
 }
