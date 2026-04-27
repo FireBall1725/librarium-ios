@@ -4,6 +4,7 @@ import SwiftUI
 /// selectedLibrary drives navigation from library list → library detail without nested NavigationStacks.
 struct ContentView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage(RedesignFlag.key) private var redesignEnabled = false
 
     @State private var selectedLibrary: Library?
     @State private var showSplash = true
@@ -25,6 +26,10 @@ struct ContentView: View {
             if let library = selectedLibrary {
                 LibraryTabView(library: library) {
                     selectedLibrary = nil
+                }
+            } else if redesignEnabled {
+                RedesignedLibrariesView { library in
+                    selectedLibrary = library
                 }
             } else {
                 LibrariesView { library in
