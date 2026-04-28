@@ -186,6 +186,14 @@ final class AppState {
 
     // MARK: - Token refresh
 
+    /// Coalesces concurrent refresh attempts per account. Cold-launch fans out
+    /// many requests in parallel; if all of them get 401 and each fires its own
+    /// refresh, the second call presents an already-rotated token and the
+    /// server treats it as token-reuse and revokes every active refresh token
+    /// for the user — boots them out of every device. One coordinator, one
+    /// in-flight task per account, every caller awaits the same outcome.
+    private let refreshCoordinator = RefreshCoordinator()
+
     @discardableResult
     func refreshToken(for accountID: UUID) async -> Bool {
         guard let account = accounts.first(where: { $0.id == accountID }),
@@ -195,34 +203,29 @@ final class AppState {
             markNeedsReauth(id: accountID)
             return false
         }
-        do {
-            let client = APIClient(baseURL: account.url)
-            let tokens: AuthTokens = try await client.post(
-                "/api/v1/auth/refresh",
-                body: ["refresh_token": account.refreshToken]
-            )
+        let outcome = await refreshCoordinator.refresh(
+            accountID: accountID,
+            baseURL: account.url,
+            refreshToken: account.refreshToken
+        )
+        switch outcome {
+        case .success(let tokens):
             guard let i = accounts.firstIndex(where: { $0.id == accountID }) else { return false }
             accounts[i].accessToken = tokens.accessToken
             accounts[i].refreshToken = tokens.refreshToken
             accounts[i].user = tokens.user
             saveAccounts()
             return true
-        } catch APIError.unauthorized {
+        case .rejected:
             // Refresh token was rejected — needs re-auth, but keep the
             // server. The user invariant is that only an explicit remove
             // wipes a server.
             markNeedsReauth(id: accountID)
             return false
-        } catch let APIError.serverError(code, _) where code == 403 {
-            // 403 from the auth endpoint is also a definitive rejection —
-            // same handling as 401.
-            markNeedsReauth(id: accountID)
-            return false
-        } catch {
-            // Transient failure (network unreachable, 5xx, decode, timeout).
-            // Keep the account untouched so the next try (next launch, pull
-            // to refresh) can succeed. Definitive rejections are handled by
-            // the catches above; everything else lands here.
+        case .transient:
+            // Network unreachable, 5xx, decode, timeout. Keep the account
+            // untouched so the next try (next launch, pull-to-refresh) can
+            // succeed.
             return false
         }
     }
@@ -326,5 +329,47 @@ final class AppState {
         UserDefaults.standard.removeObject(forKey: "token_expires_at")
         KeychainService.shared.delete("access_token")
         KeychainService.shared.delete("refresh_token")
+    }
+}
+
+// MARK: - Refresh single-flight
+
+private enum RefreshOutcome: Sendable {
+    case success(AuthTokens)
+    case rejected
+    case transient
+}
+
+private actor RefreshCoordinator {
+    private var inflight: [UUID: Task<RefreshOutcome, Never>] = [:]
+
+    func refresh(
+        accountID: UUID,
+        baseURL: String,
+        refreshToken: String
+    ) async -> RefreshOutcome {
+        if let existing = inflight[accountID] {
+            return await existing.value
+        }
+        let task = Task<RefreshOutcome, Never> {
+            do {
+                let client = APIClient(baseURL: baseURL)
+                let tokens: AuthTokens = try await client.post(
+                    "/api/v1/auth/refresh",
+                    body: ["refresh_token": refreshToken]
+                )
+                return .success(tokens)
+            } catch APIError.unauthorized {
+                return .rejected
+            } catch let APIError.serverError(code, _) where code == 403 {
+                return .rejected
+            } catch {
+                return .transient
+            }
+        }
+        inflight[accountID] = task
+        let result = await task.value
+        inflight[accountID] = nil
+        return result
     }
 }
