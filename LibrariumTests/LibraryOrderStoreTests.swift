@@ -41,7 +41,10 @@ final class LibraryOrderStoreTests: XCTestCase {
             ownerId: UUID().uuidString,
             isPublic: false,
             createdAt: "",
-            updatedAt: ""
+            updatedAt: "",
+            bookCount: nil,
+            readingCount: nil,
+            readCount: nil
         )
         lib.serverURL = server
         lib.serverName = server
