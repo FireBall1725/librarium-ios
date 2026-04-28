@@ -7,6 +7,10 @@ struct SeriesService {
         try await client.get("/api/v1/libraries/\(libraryId)/series")
     }
 
+    func get(libraryId: String, seriesId: String) async throws -> Series {
+        try await client.get("/api/v1/libraries/\(libraryId)/series/\(seriesId)")
+    }
+
     func create(libraryId: String, body: SeriesBody) async throws -> Series {
         try await client.post("/api/v1/libraries/\(libraryId)/series", body: body)
     }
@@ -25,6 +29,10 @@ struct SeriesService {
 
     func volumes(libraryId: String, seriesId: String) async throws -> [SeriesVolume] {
         try await client.get("/api/v1/libraries/\(libraryId)/series/\(seriesId)/volumes")
+    }
+
+    func arcs(libraryId: String, seriesId: String) async throws -> [SeriesArc] {
+        try await client.get("/api/v1/libraries/\(libraryId)/series/\(seriesId)/arcs")
     }
 
     func addBook(libraryId: String, seriesId: String, bookId: String, position: Double) async throws {

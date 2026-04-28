@@ -61,7 +61,11 @@ jobs:
           fi
 
           VERSION="${PREFIX}.${REV}"
-          NEXT_DEV="${PREFIX}.$((REV + 1))-dev"
+          # Per the workspace versioning convention (CLAUDE.md): local /
+          # CI dev builds carry the literal `YY.M.DEV` — not the legacy
+          # `YY.M.{R+1}-dev` suffix form. Debug bumps back to .DEV after
+          # every release; the Release config stays pinned at $VERSION.
+          NEXT_DEV="${PREFIX}.DEV"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "next_dev=$NEXT_DEV" >> "$GITHUB_OUTPUT"
           echo "Releasing version: $VERSION"

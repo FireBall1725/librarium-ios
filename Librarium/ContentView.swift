@@ -4,6 +4,7 @@ import SwiftUI
 /// selectedLibrary drives navigation from library list → library detail without nested NavigationStacks.
 struct ContentView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage(RedesignFlag.key) private var redesignEnabled = false
 
     @State private var selectedLibrary: Library?
     @State private var showSplash = true
@@ -22,7 +23,13 @@ struct ContentView: View {
     @ViewBuilder
     private var mainContent: some View {
         if appState.isAuthenticated {
-            if let library = selectedLibrary {
+            if redesignEnabled {
+                // The redesigned 5-tab shell owns its own library
+                // selection — ContentView's selectedLibrary state is
+                // legacy-only. Keep them disjoint to avoid double-state
+                // headaches when toggling the flag.
+                RedesignedAppShell()
+            } else if let library = selectedLibrary {
                 LibraryTabView(library: library) {
                     selectedLibrary = nil
                 }

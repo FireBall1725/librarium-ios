@@ -21,6 +21,10 @@ struct Series: Codable, Identifiable, Hashable {
     let tags: [Tag]
     let createdAt: String
     let updatedAt: String
+    /// First 4 books in the series — used by the redesigned series-list
+    /// mosaic to render an auto-generated "series cover" from the
+    /// volumes inside. The api already pre-builds the cover URLs.
+    let previewBooks: [SeriesPreviewBook]
 
     // Custom decoder: Go nil slices serialize as null, and optional string fields
     // may be absent entirely (omitempty) or null (pointer types). Fall back to
@@ -48,6 +52,26 @@ struct Series: Codable, Identifiable, Hashable {
         // nil slices in Go → null in JSON → decode as empty array
         genres = try c.decodeIfPresent([String].self, forKey: .genres) ?? []
         tags   = try c.decodeIfPresent([Tag].self,    forKey: .tags)   ?? []
+        previewBooks = try c.decodeIfPresent([SeriesPreviewBook].self, forKey: .previewBooks) ?? []
+    }
+}
+
+/// Trimmed book shape returned alongside `Series` for cover-mosaic
+/// rendering: just enough to tile a 2×2 grid in the series list.
+struct SeriesPreviewBook: Codable, Identifiable, Hashable {
+    let bookId: String
+    let title: String
+    /// Pre-built relative URL the api emits when the book has a primary
+    /// cover image. nil → fall back to the gradient placeholder tile.
+    let coverUrl: String?
+
+    var id: String { bookId }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        bookId   = try c.decode(String.self, forKey: .bookId)
+        title    = try c.decodeIfPresent(String.self, forKey: .title)    ?? ""
+        coverUrl = try c.decodeIfPresent(String.self, forKey: .coverUrl)
     }
 }
 
@@ -59,6 +83,8 @@ struct SeriesEntry: Codable, Identifiable {
     let subtitle: String
     let mediaType: String
     let contributors: [BookContributor]
+    /// Arc this entry belongs to, if any. nil = entry is not assigned to an arc.
+    let arcId: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -68,6 +94,33 @@ struct SeriesEntry: Codable, Identifiable {
         subtitle     = try c.decodeIfPresent(String.self, forKey: .subtitle) ?? ""
         mediaType    = try c.decodeIfPresent(String.self, forKey: .mediaType) ?? ""
         contributors = try c.decodeIfPresent([BookContributor].self, forKey: .contributors) ?? []
+        arcId        = try c.decodeIfPresent(String.self, forKey: .arcId)
+    }
+}
+
+/// Named sub-grouping within a series (e.g. "Wano Country Saga"). Each
+/// arc carries optional vol_start / vol_end bounds the UI uses to render
+/// the range label and place ghost rows for missing volumes.
+struct SeriesArc: Codable, Identifiable {
+    let id: String
+    let seriesId: String
+    let name: String
+    let description: String
+    let position: Double
+    let volStart: Double?
+    let volEnd: Double?
+    let bookCount: Int
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id          = try c.decode(String.self, forKey: .id)
+        seriesId    = try c.decode(String.self, forKey: .seriesId)
+        name        = try c.decode(String.self, forKey: .name)
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        position    = try c.decodeIfPresent(Double.self, forKey: .position) ?? 0
+        volStart    = try c.decodeIfPresent(Double.self, forKey: .volStart)
+        volEnd      = try c.decodeIfPresent(Double.self, forKey: .volEnd)
+        bookCount   = try c.decodeIfPresent(Int.self,    forKey: .bookCount) ?? 0
     }
 }
 

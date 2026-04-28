@@ -10,6 +10,12 @@ struct Library: Codable, Identifiable, Hashable {
     let createdAt: String
     let updatedAt: String
 
+    // Per-library counts — populated by the list endpoints (api 26.4.5+).
+    // Optional so payloads from older servers + offline caches still decode.
+    let bookCount: Int?
+    let readingCount: Int?
+    let readCount: Int?
+
     // Client-side only — excluded from JSON
     var serverURL: String = ""
     var serverName: String = ""
@@ -36,6 +42,7 @@ struct Library: Codable, Identifiable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, slug, ownerId, isPublic, createdAt, updatedAt
+        case bookCount, readingCount, readCount
     }
 }
 

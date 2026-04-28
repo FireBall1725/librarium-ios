@@ -1,13 +1,18 @@
 import SwiftUI
 
 enum BookSortOption: String, CaseIterable, Identifiable {
-    case titleAsc, titleDesc, recentlyAdded, oldestFirst, newestRelease, oldestRelease
+    case titleAsc, titleDesc
+    case authorAsc, authorDesc
+    case recentlyAdded, oldestFirst
+    case newestRelease, oldestRelease
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .titleAsc:       return "Title (A–Z)"
         case .titleDesc:      return "Title (Z–A)"
+        case .authorAsc:      return "Author (A–Z)"
+        case .authorDesc:     return "Author (Z–A)"
         case .recentlyAdded:  return "Recently added"
         case .oldestFirst:    return "Oldest added"
         case .newestRelease:  return "Newest release"
@@ -17,14 +22,15 @@ enum BookSortOption: String, CaseIterable, Identifiable {
     var field: String {
         switch self {
         case .titleAsc, .titleDesc:              return "title"
+        case .authorAsc, .authorDesc:            return "author"
         case .recentlyAdded, .oldestFirst:       return "created_at"
         case .newestRelease, .oldestRelease:     return "publish_date"
         }
     }
     var dir: String {
         switch self {
-        case .titleAsc, .oldestFirst, .oldestRelease:      return "asc"
-        case .titleDesc, .recentlyAdded, .newestRelease:   return "desc"
+        case .titleAsc, .authorAsc, .oldestFirst, .oldestRelease:      return "asc"
+        case .titleDesc, .authorDesc, .recentlyAdded, .newestRelease:  return "desc"
         }
     }
 }

@@ -24,6 +24,10 @@ struct ProfileView: View {
     @State private var profileMessage: Message?
     @State private var passwordMessage: Message?
 
+    // Redesign feature flag — long-press the version footer to flip.
+    @AppStorage(RedesignFlag.key) private var redesignEnabled = false
+    @State private var redesignToastVisible = false
+
     struct Message {
         let text: String
         let success: Bool
@@ -140,9 +144,66 @@ struct ProfileView: View {
             } header: {
                 Text("Security")
             }
+
+            Section {
+                HStack {
+                    Text("Version")
+                    Spacer()
+                    Text(versionString)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 1.0) {
+                    redesignEnabled.toggle()
+                    redesignToastVisible = true
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                }
+            } header: {
+                Text("About")
+            } footer: {
+                if redesignEnabled {
+                    Label("Redesign preview enabled — long-press version to disable", systemImage: "sparkles")
+                        .foregroundStyle(.indigo)
+                        .font(.footnote)
+                }
+            }
         }
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
+        .overlay(alignment: .top) {
+            if redesignToastVisible {
+                redesignToast
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .task {
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        withAnimation { redesignToastVisible = false }
+                    }
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: redesignToastVisible)
+    }
+
+    /// "26.4.4 (build 1138)" — pulled from Info.plist at runtime so it
+    /// stays in sync with the release workflow's MARKETING_VERSION bumps.
+    private var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let marketing = (info?["CFBundleShortVersionString"] as? String) ?? "?"
+        let build = (info?["CFBundleVersion"] as? String) ?? "?"
+        return "\(marketing) (build \(build))"
+    }
+
+    @ViewBuilder
+    private var redesignToast: some View {
+        let label = redesignEnabled ? "Redesign preview ON" : "Redesign preview OFF"
+        let icon = redesignEnabled ? "sparkles" : "circle.slash"
+        Label(label, systemImage: icon)
+            .font(.footnote.weight(.semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.thinMaterial, in: Capsule())
+            .overlay(Capsule().stroke(Color.secondary.opacity(0.2)))
     }
 
     // MARK: - Derived
