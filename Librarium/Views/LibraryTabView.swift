@@ -4,11 +4,16 @@ struct LibraryTabView: View {
     let library: Library
     let onBack: () -> Void
     @Environment(AppState.self) private var appState
+    @AppStorage(RedesignFlag.key) private var redesignEnabled = false
 
     var body: some View {
         TabView {
             NavigationStack {
-                BooksView(library: library)
+                if redesignEnabled {
+                    RedesignedBooksView(library: library)
+                } else {
+                    BooksView(library: library)
+                }
             }
             .environment(\.libraryBack, onBack)
             .tabItem { Label("Books", systemImage: "books.vertical") }

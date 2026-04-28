@@ -78,11 +78,14 @@ enum Theme {
                 .weight(weight)
         }
 
-        // Small-caps label — Cinzel variable font. Always uppercase +
-        // letter-spaced. Use ``.tracking(...)`` at the call site.
+        // Small-caps label — SF Pro at the call site, uppercased + letter-
+        // spaced via `.tracking(...)`. The mockup originally specified
+        // Cinzel via `--font-label`, but Cinzel reads too display-face for
+        // utility labels (SERVERS / EDITION / CURRENTLY READING) — a
+        // clean SF caps treatment matches the rendered mockup better and
+        // keeps these chrome bits out of the editorial spotlight.
         static func label(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-            Font.custom("Cinzel", size: size, relativeTo: .caption)
-                .weight(weight)
+            Font.system(size: size, weight: weight, design: .default)
         }
 
         // UI workhorse — SF Pro. Default for chrome, dense rows, numbers.
@@ -97,9 +100,9 @@ enum Theme {
 
         // MARK: Named roles (matching the type-scale table in the mockup)
 
-        static var pageTitle: Font     { display(32, weight: .bold) }
-        static var heroTitle: Font     { display(24, weight: .semibold) }
-        static var cardTitle: Font     { display(17, weight: .semibold) }
+        static var pageTitle: Font     { display(36, weight: .semibold) }
+        static var heroTitle: Font     { display(22, weight: .semibold) }
+        static var cardTitle: Font     { display(18, weight: .semibold) }
         static var rowPrimary: Font    { ui(14, weight: .semibold) }
         static var rowMeta: Font       { ui(12, weight: .medium) }
         static var inlineAction: Font  { ui(11, weight: .semibold) }

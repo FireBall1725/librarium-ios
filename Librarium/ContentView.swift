@@ -23,13 +23,15 @@ struct ContentView: View {
     @ViewBuilder
     private var mainContent: some View {
         if appState.isAuthenticated {
-            if let library = selectedLibrary {
+            if redesignEnabled {
+                // The redesigned 5-tab shell owns its own library
+                // selection — ContentView's selectedLibrary state is
+                // legacy-only. Keep them disjoint to avoid double-state
+                // headaches when toggling the flag.
+                RedesignedAppShell()
+            } else if let library = selectedLibrary {
                 LibraryTabView(library: library) {
                     selectedLibrary = nil
-                }
-            } else if redesignEnabled {
-                RedesignedLibrariesView { library in
-                    selectedLibrary = library
                 }
             } else {
                 LibrariesView { library in

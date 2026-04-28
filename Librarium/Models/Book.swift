@@ -37,6 +37,15 @@ struct Book: Codable, Identifiable, Hashable {
     let coverUrl: String?
     let hasCover: Bool
 
+    // Caller-scoped fields populated by the books list endpoint (api 26.4.x+).
+    // Optional + zero-tolerant so payloads from older servers + offline caches
+    // still decode. The redesigned books grid renders rating/progress/lent
+    // overlays only when these are present and non-zero.
+    let userReadStatus: String?    // "read" / "reading" / "did_not_finish" / "want_to_read" / nil
+    let userRating: Int?           // 1–10 half-star integer; 0 / nil = no rating
+    let userProgressPct: Double?   // 0–100; 0 / nil = no progress
+    let activeLoanCount: Int?      // count of unreturned loans across editions
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id           = try c.decode(String.self,   forKey: .id)
@@ -54,6 +63,10 @@ struct Book: Codable, Identifiable, Hashable {
         genres       = try c.decodeIfPresent([Genre].self,           forKey: .genres)       ?? []
         coverUrl     = try c.decodeIfPresent(String.self, forKey: .coverUrl)
         hasCover     = try c.decodeIfPresent(Bool.self,   forKey: .hasCover)    ?? false
+        userReadStatus   = try c.decodeIfPresent(String.self, forKey: .userReadStatus)
+        userRating       = try c.decodeIfPresent(Int.self,    forKey: .userRating)
+        userProgressPct  = try c.decodeIfPresent(Double.self, forKey: .userProgressPct)
+        activeLoanCount  = try c.decodeIfPresent(Int.self,    forKey: .activeLoanCount)
     }
 }
 
