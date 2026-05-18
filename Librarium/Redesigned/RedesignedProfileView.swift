@@ -17,7 +17,7 @@ import SwiftUI
 struct RedesignedProfileView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(RedesignFlag.key) private var redesignEnabled = false
+    @AppStorage(RedesignFlag.key) private var redesignEnabled = true
 
     @State private var vm = RedesignedProfileViewModel()
     @State private var showAddServer = false

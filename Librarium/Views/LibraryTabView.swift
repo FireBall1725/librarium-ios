@@ -4,7 +4,7 @@ struct LibraryTabView: View {
     let library: Library
     let onBack: () -> Void
     @Environment(AppState.self) private var appState
-    @AppStorage(RedesignFlag.key) private var redesignEnabled = false
+    @AppStorage(RedesignFlag.key) private var redesignEnabled = true
 
     var body: some View {
         TabView {

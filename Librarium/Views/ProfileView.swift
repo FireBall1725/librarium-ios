@@ -25,7 +25,7 @@ struct ProfileView: View {
     @State private var passwordMessage: Message?
 
     // Redesign feature flag — long-press the version footer to flip.
-    @AppStorage(RedesignFlag.key) private var redesignEnabled = false
+    @AppStorage(RedesignFlag.key) private var redesignEnabled = true
     @State private var redesignToastVisible = false
 
     struct Message {
