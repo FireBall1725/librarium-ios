@@ -17,6 +17,11 @@ struct LibrariumApp: App {
             PersistedBook.self,
             PersistedSeries.self,
             PersistedSeriesEntry.self,
+            PersistedSeriesArc.self,
+            PersistedBookEditions.self,
+            PersistedBookShelves.self,
+            PersistedTag.self,
+            PersistedMediaType.self,
         ])
         let config = ModelConfiguration(schema: schema)
         do {

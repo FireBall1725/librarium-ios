@@ -4,7 +4,7 @@ import SwiftData
 
 enum BookCacheState: Equatable {
     case notCached
-    case syncing(progress: Double)
+    case syncing(progress: Double, phase: String)
     case cached(bookCount: Int)
 }
 
@@ -75,6 +75,11 @@ final class LibraryOfflineStore {
         if enabled {
             enabledKeys.insert(key)
             if bookCacheStates[key] == nil { bookCacheStates[key] = .notCached }
+            // Clear the throttle stamp so a fresh toggle-on always
+            // kicks a full sync. Without this, an off→on within 60s
+            // returns immediately from `syncBooks` and the user sees
+            // no download.
+            lastFingerprintCheck.removeValue(forKey: key)
         } else {
             // Turning off "Keep offline" drops the book cache and opt-in flag
             // only. Library metadata stays in the always-cached set so the
@@ -178,45 +183,6 @@ final class LibraryOfflineStore {
         if let last = lastFingerprintCheck[key], now.timeIntervalSince(last) < 60 { return }
         lastFingerprintCheck[key] = now
 
-        // Series sync runs unconditionally — the book fingerprint
-        // short-circuit below skips when books are unchanged, but
-        // series can change independently. We also fan out and pull
-        // each series' entries in parallel so the offline series-
-        // detail view doesn't need a prior online visit per series.
-        // Bounded by Swift's task-group concurrency; the wall-clock
-        // cost is roughly one round-trip, not N.
-        do {
-            let allSeries = try await SeriesService(client: client).list(libraryId: library.id)
-            #if DEBUG
-            print("📚 [SeriesSync] fetched \(allSeries.count) series for library \(library.name)")
-            #endif
-            let seriesCache = SeriesCache(modelContainer: modelContainer)
-            seriesCache.upsert(allSeries, for: library, serverAccountID: serverAccountID)
-
-            await withTaskGroup(of: Void.self) { group in
-                for series in allSeries {
-                    let seriesId = series.id
-                    group.addTask {
-                        let entries = (try? await SeriesService(client: client)
-                            .books(libraryId: library.id, seriesId: seriesId)) ?? []
-                        seriesCache.upsertEntries(
-                            entries,
-                            for: library,
-                            seriesId: seriesId,
-                            serverAccountID: serverAccountID
-                        )
-                    }
-                }
-            }
-            #if DEBUG
-            print("📚 [SeriesSync] entries cached for \(allSeries.count) series")
-            #endif
-        } catch {
-            #if DEBUG
-            print("⚠️ [SeriesSync] fetch failed for library \(library.name): \(error)")
-            #endif
-        }
-
         let cache = BookCache(modelContainer: modelContainer)
         let cachedCount = cache.bookCount(for: library)
 
@@ -227,7 +193,7 @@ final class LibraryOfflineStore {
             // If fingerprint fails (e.g. older server without the endpoint) fall
             // through to a full sync only if we don't already have a cache.
             if cachedCount > 0 { return }
-            await fullSync(for: library, client: client, serverAccountID: serverAccountID, accessToken: accessToken, cache: cache, newFingerprint: nil)
+            await fullSync(for: library, client: client, serverAccountID: serverAccountID, accessToken: accessToken, cache: cache, newFingerprint: nil, modelContainer: modelContainer)
             return
         }
 
@@ -236,7 +202,7 @@ final class LibraryOfflineStore {
             return
         }
 
-        await fullSync(for: library, client: client, serverAccountID: serverAccountID, accessToken: accessToken, cache: cache, newFingerprint: fp)
+        await fullSync(for: library, client: client, serverAccountID: serverAccountID, accessToken: accessToken, cache: cache, newFingerprint: fp, modelContainer: modelContainer)
     }
 
     private func fullSync(
@@ -245,18 +211,21 @@ final class LibraryOfflineStore {
         serverAccountID: UUID,
         accessToken: String?,
         cache: BookCache,
-        newFingerprint: BookFingerprint?
+        newFingerprint: BookFingerprint?,
+        modelContainer: ModelContainer
     ) async {
         let key = library.clientKey
-        bookCacheStates[key] = .syncing(progress: 0)
+        bookCacheStates[key] = .syncing(progress: 0, phase: "books")
 
-        let cached = await cache.syncFull(
+        // Unified library sync — pulls books, covers, series + entries
+        // + arcs, tags, media types, editions + shelves per book.
+        let cached = await LibrarySync(modelContainer: modelContainer).run(
             library: library,
             serverAccountID: serverAccountID,
             accessToken: accessToken,
             client: client,
-            onProgress: { [weak self] pct in
-                self?.bookCacheStates[key] = .syncing(progress: pct)
+            onProgress: { [weak self] update in
+                self?.bookCacheStates[key] = .syncing(progress: update.progress, phase: update.phase)
             }
         )
 

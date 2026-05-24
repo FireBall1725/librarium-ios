@@ -638,6 +638,11 @@ final class RedesignedSeriesDetailViewModel {
 
         if let loadedArcs = try? await arcsTask {
             arcs = loadedArcs.sorted { $0.position < $1.position }
+            // Write through so offline visits get the same arc layout.
+            if let accountID = appState.accounts.first(where: { $0.url == library.serverURL })?.id {
+                ArcCache(modelContainer: modelContainer)
+                    .upsert(loadedArcs, for: library, seriesId: series.id, serverAccountID: accountID)
+            }
         }
 
         // 2. Fetch each entry's full Book in parallel — required to get
@@ -662,12 +667,14 @@ final class RedesignedSeriesDetailViewModel {
     }
 
     /// Pure-cache load — used by the offline short-circuit and the
-    /// api-failure catch. Pulls cached entries from SeriesCache and
-    /// pairs them with cached Book payloads. Arcs aren't cached so
-    /// degrade to an empty list (volumes still render in position
-    /// order, just not arc-grouped).
+    /// api-failure catch. Pulls cached entries from SeriesCache, arcs
+    /// from ArcCache, and pairs each entry with its cached Book
+    /// payload. The unified LibrarySync writes all three caches on
+    /// every kept-offline pass, so offline detail matches the online
+    /// layout exactly.
     private func loadFromCache(library: Library, series: Series, modelContainer: ModelContainer) {
         let seriesCache = SeriesCache(modelContainer: modelContainer)
+        let arcCache = ArcCache(modelContainer: modelContainer)
         let bookCache = BookCache(modelContainer: modelContainer)
         let cached = seriesCache.entries(
             serverURL: library.serverURL,
@@ -678,7 +685,7 @@ final class RedesignedSeriesDetailViewModel {
         arcAssignments = Dictionary(uniqueKeysWithValues: cached.compactMap { entry in
             entry.arcId.map { (entry.bookId, $0) }
         })
-        arcs = []
+        arcs = arcCache.arcs(for: library, seriesId: series.id)
         let cachedBooks: [Book] = cached.compactMap { entry in
             bookCache.book(
                 serverURL: library.serverURL,

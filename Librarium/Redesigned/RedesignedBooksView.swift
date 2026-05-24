@@ -48,10 +48,27 @@ struct RedesignedBooksView: View {
     /// path updates on every page upserted. `@Observable` propagates
     /// the change to this view automatically.
     private var syncProgress: Double? {
-        if case .syncing(let p) = offlineStore.bookCacheStates[library.clientKey] {
+        if case .syncing(let p, _) = offlineStore.bookCacheStates[library.clientKey] {
             return p
         }
         return nil
+    }
+
+    /// Friendly label for the current sync phase. Updates as the sync
+    /// works through books → tags → series → editions/shelves so the
+    /// user knows what's happening when the percentage seems stuck.
+    private var syncPhaseLabel: String? {
+        guard case .syncing(_, let phase) = offlineStore.bookCacheStates[library.clientKey] else {
+            return nil
+        }
+        switch phase {
+        case "books":    return "Downloading books"
+        case "tags":     return "Downloading tags"
+        case "series":   return "Downloading series"
+        case "editions": return "Downloading book details"
+        case "done":     return "Finishing up"
+        default:         return "Downloading library"
+        }
     }
 
     private var isSyncing: Bool { syncProgress != nil }
@@ -222,10 +239,11 @@ struct RedesignedBooksView: View {
     }
 
     private func syncBannerTitle(downloaded: Int, total: Int) -> String {
-        if total > 0 {
-            return "Downloading library — \(downloaded.formatted()) of \(total.formatted())"
+        let phase = syncPhaseLabel ?? "Downloading library"
+        if phase == "Downloading books", total > 0 {
+            return "\(phase) — \(downloaded.formatted()) of \(total.formatted())"
         }
-        return "Downloading library…"
+        return "\(phase)…"
     }
 
     @ViewBuilder
@@ -446,7 +464,7 @@ struct RedesignedBooksView: View {
     }
 
     private var emptyStateTitle: String {
-        if isSyncing { return "Downloading your library…" }
+        if isSyncing { return (syncPhaseLabel ?? "Downloading your library") + "…" }
         return vm.hasActiveFilters ? "No matches" : "No books yet"
     }
 
