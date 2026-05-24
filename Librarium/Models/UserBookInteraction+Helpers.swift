@@ -55,4 +55,23 @@ extension UserBookInteraction {
             updatedAt: updatedAt
         )
     }
+
+    /// Copy with `rating` overridden. Pass nil to clear.
+    func with(rating: Double?, updatedAt: String) -> UserBookInteraction {
+        UserBookInteraction(
+            id: id,
+            userId: userId,
+            bookEditionId: bookEditionId,
+            readStatus: readStatus,
+            rating: rating,
+            notes: notes,
+            review: review,
+            dateStarted: dateStarted,
+            dateFinished: dateFinished,
+            isFavorite: isFavorite,
+            rereadCount: rereadCount,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
 }

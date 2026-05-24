@@ -37,6 +37,7 @@ struct RedesignedBookDetailView: View {
     @State private var showScanner = false
     @State private var showActionStub = false
     @State private var actionStubLabel = ""
+    @State private var showRateSheet = false
     @State private var pendingSeriesID: String?
     @State private var loadedSeries: Series?
 
@@ -118,6 +119,13 @@ struct RedesignedBookDetailView: View {
         .sheet(isPresented: $showEdit) {
             AddEditBookSheet(library: library, book: currentBook) { updated in
                 currentBook = updated
+            }
+        }
+        .sheet(isPresented: $showRateSheet) {
+            RedesignedRateSheet(
+                initialRawRating: interaction?.rating.map { Int($0) }
+            ) { newRawRating in
+                Task { await applyRating(newRawRating) }
             }
         }
         .alert(actionStubLabel, isPresented: $showActionStub) {
@@ -210,6 +218,49 @@ struct RedesignedBookDetailView: View {
                 .frame(width: 38, height: 38)
                 .background(Color.white.opacity(0.06), in: Circle())
                 .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
+        }
+    }
+
+    /// Apply a new rating (or clear it) through the outbox.
+    /// Same pattern as toggleFavorite: optimistic UI flip, enqueue a
+    /// PendingSyncOp on the right account, kick a background drain.
+    /// Direct PUT to /my-interaction for this field is gone.
+    private func applyRating(_ newRawRating: Int?) async {
+        guard let i = interaction else { return }
+        let now = Date()
+        let nowString = SyncTimestampFormatter.shared.string(from: now)
+
+        let newRating = newRawRating.map { Double($0) }
+        interaction = i.with(rating: newRating, updatedAt: nowString)
+
+        guard let entityID = UUID(uuidString: i.id),
+              let account = appState.accounts.first(where: { $0.url == library.serverURL })
+        else { return }
+
+        let op = PendingSyncOp.rating(
+            serverAccountID: account.id,
+            entityID: entityID,
+            value: newRawRating,
+            updatedAt: now
+        )
+        modelContext.insert(op)
+        do {
+            try modelContext.save()
+        } catch {
+            #if DEBUG
+            print("📤 [applyRating] failed to queue op: \(error)")
+            #endif
+            return
+        }
+
+        let api = appState.makeClient(serverURL: library.serverURL)
+        let service = SyncService(
+            api: api,
+            serverAccountID: account.id,
+            modelContainer: modelContext.container
+        )
+        Task {
+            try? await service.drainOutbox()
         }
     }
 
@@ -481,7 +532,7 @@ struct RedesignedBookDetailView: View {
     private var quickActions: some View {
         HStack(spacing: 10) {
             qa(icon: "book.fill", label: "Re-read") { stub("Re-read") }
-            qa(icon: "star.fill", label: "Rate")    { stub("Rate") }
+            qa(icon: "star.fill", label: "Rate")    { showRateSheet = true }
             qa(icon: "bubble.left.fill", label: "Review") { stub("Review") }
             qa(icon: "arrow.up.arrow.down.circle.fill", label: "Loan") {
                 stub("Loan")
