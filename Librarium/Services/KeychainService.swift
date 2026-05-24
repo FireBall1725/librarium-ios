@@ -7,20 +7,29 @@ final class KeychainService {
 
     private init() {}
 
+    /// Write a value, always with `kSecAttrAccessibleAfterFirstUnlock`.
+    ///
+    /// `AfterFirstUnlock` (rather than the default `WhenUnlocked`) means
+    /// tokens stay readable across background scenarios — passcode
+    /// re-locks, autosuspend, app-refresh tasks — once the device has
+    /// been unlocked at least once since boot. That's what we want for
+    /// refresh-on-launch flows.
+    ///
+    /// Accessibility class is set at insert time and can't be changed by
+    /// `SecItemUpdate`. To migrate existing items written with the older
+    /// default, we delete then re-add so the new entry picks up the
+    /// upgraded class. Idempotent: nothing to delete on the first write.
     func set(_ value: String, forKey key: String) {
         let data = Data(value.utf8)
-        let query: [CFString: Any] = [
-            kSecClass:       kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: key,
+        delete(key)
+        let attributes: [CFString: Any] = [
+            kSecClass:           kSecClassGenericPassword,
+            kSecAttrService:     service,
+            kSecAttrAccount:     key,
+            kSecValueData:       data,
+            kSecAttrAccessible:  kSecAttrAccessibleAfterFirstUnlock,
         ]
-        let update: [CFString: Any] = [kSecValueData: data]
-
-        if SecItemUpdate(query as CFDictionary, update as CFDictionary) == errSecItemNotFound {
-            var insert = query
-            insert[kSecValueData] = data
-            SecItemAdd(insert as CFDictionary, nil)
-        }
+        SecItemAdd(attributes as CFDictionary, nil)
     }
 
     func get(_ key: String) -> String? {

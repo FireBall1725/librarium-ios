@@ -90,6 +90,12 @@ struct ContentView: View {
         await withTaskGroup(of: Void.self) { group in
             for account in accounts {
                 group.addTask {
+                    // Rotate the access token first if it's near expiry
+                    // so the api requests below don't 401 and trigger
+                    // the same rotation through the slower reactive
+                    // path. Idempotent; cheap when token is fresh.
+                    await appState.proactivelyRefreshIfNeeded(accountID: account.id)
+
                     let api = await appState.makeClient(serverURL: account.url)
                     let service = SyncService(
                         api: api,

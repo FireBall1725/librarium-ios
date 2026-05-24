@@ -124,6 +124,7 @@ final class AppState {
         accounts[i].accessToken = tokens.accessToken
         accounts[i].refreshToken = tokens.refreshToken
         accounts[i].user = tokens.user
+        accounts[i].accessTokenExpiresAt = Date().addingTimeInterval(TimeInterval(tokens.expiresIn))
         saveAccounts()
     }
 
@@ -194,6 +195,22 @@ final class AppState {
     /// in-flight task per account, every caller awaits the same outcome.
     private let refreshCoordinator = RefreshCoordinator()
 
+    /// Refresh the access token if it's missing, unknown when it
+    /// expires, or due to expire within the next five minutes.
+    /// Multiple parallel callers share the same in-flight refresh
+    /// via the existing `RefreshCoordinator`, so it's safe to fire
+    /// this at the start of every app session for every account.
+    func proactivelyRefreshIfNeeded(accountID: UUID) async {
+        guard let account = accounts.first(where: { $0.id == accountID }),
+              !account.refreshToken.isEmpty else { return }
+        if let expiresAt = account.accessTokenExpiresAt,
+           expiresAt > Date().addingTimeInterval(5 * 60) {
+            // Plenty of life left on the current token.
+            return
+        }
+        await refreshToken(for: accountID)
+    }
+
     @discardableResult
     func refreshToken(for accountID: UUID) async -> Bool {
         guard let account = accounts.first(where: { $0.id == accountID }),
@@ -214,6 +231,7 @@ final class AppState {
             accounts[i].accessToken = tokens.accessToken
             accounts[i].refreshToken = tokens.refreshToken
             accounts[i].user = tokens.user
+            accounts[i].accessTokenExpiresAt = Date().addingTimeInterval(TimeInterval(tokens.expiresIn))
             saveAccounts()
             return true
         case .rejected:
@@ -251,7 +269,8 @@ final class AppState {
                 url: meta.url,
                 accessToken: access,
                 refreshToken: refresh,
-                user: meta.user
+                user: meta.user,
+                accessTokenExpiresAt: meta.accessTokenExpiresAt
             )
         }
         if let raw = UserDefaults.standard.string(forKey: "primary_account_id"),
@@ -262,7 +281,7 @@ final class AppState {
     }
 
     private func saveAccounts() {
-        let metas = accounts.map { ServerAccountMeta(id: $0.id, name: $0.name, url: $0.url, user: $0.user) }
+        let metas = accounts.map { ServerAccountMeta(id: $0.id, name: $0.name, url: $0.url, user: $0.user, accessTokenExpiresAt: $0.accessTokenExpiresAt) }
         if let data = try? JSONEncoder().encode(metas) {
             UserDefaults.standard.set(data, forKey: "server_accounts")
         }
@@ -319,7 +338,8 @@ final class AppState {
             url: url,
             accessToken: accessToken,
             refreshToken: refreshToken,
-            user: user
+            user: user,
+            accessTokenExpiresAt: nil
         )
         accounts = [account]
         saveAccounts()
