@@ -8,6 +8,8 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showSplash = true
+    @State private var telemetry = TelemetryService.shared
+    @State private var showTelemetryOptIn = false
 
     var body: some View {
         ZStack {
@@ -20,16 +22,50 @@ struct ContentView: View {
         }
         .task(id: appState.isAuthenticated) {
             await runSyncAllAccounts()
+            maybeShowTelemetryOptIn(source: "task")
+        }
+        .onChange(of: showSplash) { _, isShowing in
+            // Wait until splash has fully dismissed so the sheet
+            // doesn't race the splash transition.
+            if !isShowing {
+                maybeShowTelemetryOptIn(source: "splash-dismissed")
+            }
+        }
+        .onChange(of: appState.isAuthenticated) { _, authed in
+            if authed {
+                maybeShowTelemetryOptIn(source: "auth-flipped")
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            // Re-drain on foreground so the local store catches up with
-            // anything that landed on the server while the app was in
-            // the background. Cheap when the outbox is empty and the
-            // server has no new ops.
             if newPhase == .active {
                 Task { await runSyncAllAccounts() }
             }
         }
+        .fullScreenCover(isPresented: $showTelemetryOptIn) {
+            TelemetryOptInSheet(
+                onEnable: { telemetry.setOptIn(true) },
+                onDecline: { telemetry.setOptIn(false) }
+            )
+        }
+    }
+
+    /// Surface the opt-in sheet on the first authenticated launch and
+    /// on upgrades from a build that never had telemetry. Once the
+    /// user has either enabled or declined the sheet never appears
+    /// again. Multiple triggers (initial .task, splash dismissal,
+    /// auth flipping) all funnel through this single guarded check
+    /// so whichever fires first wins.
+    private func maybeShowTelemetryOptIn(source: String) {
+        let auth = appState.isAuthenticated
+        let decided = telemetry.hasDecided
+        #if DEBUG
+        print("📊 [Telemetry] check from \(source): auth=\(auth) decided=\(decided) splash=\(showSplash)")
+        #endif
+        guard auth, !decided, !showSplash else { return }
+        #if DEBUG
+        print("📊 [Telemetry] triggering opt-in cover")
+        #endif
+        showTelemetryOptIn = true
     }
 
     @ViewBuilder

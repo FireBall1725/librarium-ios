@@ -19,6 +19,7 @@ struct RedesignedProfileView: View {
 
     @State private var vm = RedesignedProfileViewModel()
     @State private var showAddServer = false
+    @State private var showTelemetrySettings = false
     @State private var manageAccount: ServerAccount?
     @State private var confirmRemove: ServerAccount?
     @State private var confirmSignOut = false
@@ -52,6 +53,11 @@ struct RedesignedProfileView: View {
         .sheet(item: $manageAccount) { account in
             NavigationStack {
                 ProfileView(account: account)
+            }
+        }
+        .sheet(isPresented: $showTelemetrySettings) {
+            NavigationStack {
+                TelemetrySettingsView()
             }
         }
         .confirmationDialog(
@@ -340,6 +346,15 @@ struct RedesignedProfileView: View {
                     labelColor: Theme.Colors.bad
                 ) {
                     confirmSignOut = true
+                }
+                Divider().background(Theme.Colors.appLine)
+                appRow(
+                    icon: "chart.bar.fill",
+                    iconBg: Color(hex: 0x1d2a3a),
+                    label: "Telemetry",
+                    right: AnyView(Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.Colors.appText3))
+                ) {
+                    showTelemetrySettings = true
                 }
                 Divider().background(Theme.Colors.appLine)
                 versionRow

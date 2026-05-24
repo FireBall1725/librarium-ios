@@ -379,6 +379,29 @@ struct RedesignedBookDetailView: View {
         try? modelContext.save()
 
         kickDrain(accountID: accountID)
+
+        if let pages = pagesRead, let totalPages = primaryEdition?.pageCount, totalPages > 0 {
+            let pct = Int((Double(pages) / Double(totalPages) * 100.0).rounded())
+            TelemetryService.shared.send(
+                "progress_updated",
+                payload: ["pct_bucket": progressBucket(forPercent: pct)]
+            )
+        } else if pagesRead == nil {
+            TelemetryService.shared.send("progress_cleared")
+        }
+    }
+
+    /// Bucket the reading-progress percentage so the dashboard sees
+    /// engagement without inferring anything about a specific book.
+    private func progressBucket(forPercent pct: Int) -> String {
+        switch pct {
+        case ..<11: return "0-10"
+        case 11...25: return "11-25"
+        case 26...50: return "26-50"
+        case 51...75: return "51-75"
+        case 76...99: return "76-99"
+        default: return "100"
+        }
     }
 
     /// Apply a new read-status through the outbox. Same pattern as
@@ -404,6 +427,11 @@ struct RedesignedBookDetailView: View {
         try? modelContext.save()
 
         kickDrain(accountID: accountID)
+
+        TelemetryService.shared.send(
+            "status_set",
+            payload: ["status": newStatus]
+        )
     }
 
     /// Apply a new rating (or clear it) through the outbox.
@@ -428,6 +456,15 @@ struct RedesignedBookDetailView: View {
         try? modelContext.save()
 
         kickDrain(accountID: accountID)
+
+        if let raw = newRawRating {
+            TelemetryService.shared.send(
+                "rating_set",
+                payload: ["stars_half": String(raw)]
+            )
+        } else {
+            TelemetryService.shared.send("rating_cleared")
+        }
     }
 
     /// Toggle the favourite flag through the outbox. PersistedInteraction
@@ -456,6 +493,11 @@ struct RedesignedBookDetailView: View {
         try? modelContext.save()
 
         kickDrain(accountID: accountID)
+
+        TelemetryService.shared.send(
+            "favourite_toggled",
+            payload: ["enabled": newFavorite ? "true" : "false"]
+        )
     }
 
     // MARK: - Hero
@@ -1087,6 +1129,11 @@ struct RedesignedBookDetailView: View {
         // the stat-grid contents below, not the user-state shown above.
         let primary = editions.first(where: { $0.isPrimary }) ?? editions.first
         selectedEditionID = primary?.id
+
+        TelemetryService.shared.send(
+            "book_detail_opened",
+            payload: ["media_type": currentBook.mediaType.isEmpty ? "unknown" : currentBook.mediaType]
+        )
 
         if let pe = primary {
             // Local-first: read whatever PersistedInteraction we already
