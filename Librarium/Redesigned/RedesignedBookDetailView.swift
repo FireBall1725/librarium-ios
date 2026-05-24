@@ -44,6 +44,7 @@ struct RedesignedBookDetailView: View {
     @State private var actionStubLabel = ""
     @State private var showRateSheet = false
     @State private var showStatusSheet = false
+    @State private var showProgressSheet = false
     @State private var pendingSeriesID: String?
     @State private var loadedSeries: Series?
 
@@ -140,6 +141,18 @@ struct RedesignedBookDetailView: View {
             ) { newStatus in
                 Task { await applyReadStatus(newStatus) }
             }
+        }
+        .sheet(isPresented: $showProgressSheet) {
+            RedesignedProgressSheet(
+                pageCount: primaryEdition?.pageCount,
+                initialPagesRead: currentPagesRead,
+                onSavePages: { newPages in
+                    Task { await applyProgress(pagesRead: newPages) }
+                },
+                onMarkFinished: {
+                    Task { await applyReadStatus("read") }
+                }
+            )
         }
         .alert(actionStubLabel, isPresented: $showActionStub) {
             Button("OK") { }
@@ -285,6 +298,43 @@ struct RedesignedBookDetailView: View {
             modelContainer: modelContext.container
         )
         Task { try? await service.drainOutbox() }
+    }
+
+    /// Apply a new reading-progress value through the outbox. The
+    /// progress field is a JSONB blob (`{pages_read?, percent?,
+    /// position?}` per the sync protocol); v1 only writes pages_read.
+    /// Pass nil to clear progress entirely.
+    private func applyProgress(pagesRead: Int?) async {
+        guard let entityID = interaction.flatMap({ UUID(uuidString: $0.id) })
+        else { return }
+
+        let opValue: SyncJSONValue?
+        let progressData: Data?
+        if let pages = pagesRead {
+            let dict: [String: SyncJSONValue] = ["pages_read": .int(pages)]
+            let value = SyncJSONValue.object(dict)
+            opValue = value
+            progressData = value.encodedJSON()
+        } else {
+            opValue = .null
+            progressData = nil
+        }
+
+        let accountID = writeLocal { row, now in
+            row.progressJSON = progressData
+            row.progressUpdatedAt = now
+        }
+        guard let accountID else { return }
+
+        let op = PendingSyncOp.progress(
+            serverAccountID: accountID,
+            entityID: entityID,
+            value: opValue
+        )
+        modelContext.insert(op)
+        try? modelContext.save()
+
+        kickDrain(accountID: accountID)
     }
 
     /// Apply a new read-status through the outbox. Same pattern as
@@ -575,6 +625,18 @@ struct RedesignedBookDetailView: View {
         return interaction?.readStatus ?? "unread"
     }
 
+    /// Pages read pulled from the local progress JSON blob. nil when
+    /// nothing's been tracked yet or the stored shape doesn't carry
+    /// a pages_read key (e.g., percent-only ebook readers).
+    private var currentPagesRead: Int? {
+        guard let p = persisted, let data = p.progressJSON else { return nil }
+        guard let parsed = try? JSONDecoder().decode(SyncJSONValue.self, from: data),
+              case .object(let dict) = parsed,
+              let pagesValue = dict["pages_read"],
+              case .int(let pages) = pagesValue else { return nil }
+        return pages
+    }
+
     @ViewBuilder
     private func ratingLine(rating: Double) -> some View {
         HStack(spacing: 6) {
@@ -606,7 +668,7 @@ struct RedesignedBookDetailView: View {
     @ViewBuilder
     private var quickActions: some View {
         HStack(spacing: 10) {
-            qa(icon: "book.fill", label: "Re-read") { stub("Re-read") }
+            qa(icon: "book.pages.fill", label: "Progress") { showProgressSheet = true }
             qa(icon: "star.fill", label: "Rate")    { showRateSheet = true }
             qa(icon: "bubble.left.fill", label: "Review") { stub("Review") }
             qa(icon: "arrow.up.arrow.down.circle.fill", label: "Loan") {
