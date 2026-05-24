@@ -176,10 +176,10 @@
 				};
 			};
 			buildConfigurationList = 00CB09442F8B901D0018CA13 /* Build configuration list for PBXProject "Librarium" */;
-			developmentRegion = en;
+			developmentRegion = "en-CA";
 			hasScannedForEncodings = 0;
 			knownRegions = (
-				en,
+				"en-CA",
 				Base,
 			);
 			mainGroup = 00CB09402F8B901D0018CA13;

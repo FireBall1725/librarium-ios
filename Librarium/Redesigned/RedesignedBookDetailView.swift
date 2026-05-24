@@ -54,7 +54,7 @@ struct RedesignedBookDetailView: View {
         self._currentBook = State(initialValue: book)
     }
 
-    /// The primary edition — drives the hero meta line, the favorite
+    /// The primary edition — drives the hero meta line, the favourite
     /// toggle, and the user interaction (rating / status). Stable across
     /// edition-picker changes so the user-state shown above the picker
     /// doesn't shift when they're just inspecting another edition's
@@ -202,7 +202,7 @@ struct RedesignedBookDetailView: View {
         HStack(spacing: 6) {
             navIconButton(systemName: "chevron.left") { dismiss() }
             Spacer()
-            // Bookmark = toggle favorite. Filled when on, outline when
+            // Bookmark = toggle favourite. Filled when on, outline when
             // off. Disabled until the primary edition (and therefore the
             // interaction) has loaded so the optimistic toggle has a
             // record to write to.
@@ -430,7 +430,7 @@ struct RedesignedBookDetailView: View {
         kickDrain(accountID: accountID)
     }
 
-    /// Toggle the favorite flag through the outbox. PersistedInteraction
+    /// Toggle the favourite flag through the outbox. PersistedInteraction
     /// is the source of truth; @Observable makes the UI update when we
     /// mutate it. `BookService.updateInteraction` PUT is gone for this
     /// field; other fields still use it pending their own rewires.
