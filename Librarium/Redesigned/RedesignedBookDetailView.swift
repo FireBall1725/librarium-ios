@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// Redesigned book detail — mockup card #4.
@@ -19,11 +20,17 @@ struct RedesignedBookDetailView: View {
     let book: Book
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
 
     @State private var currentBook: Book
     @State private var editions: [BookEdition] = []
     @State private var selectedEditionID: String?
     @State private var interaction: UserBookInteraction?
+    /// Local SwiftData mirror of the primary edition's interaction.
+    /// Source of truth for fields covered by the sync protocol
+    /// (`isFavorite`, `rating`); other fields still come from
+    /// `interaction` until they get their own sync columns.
+    @State private var persisted: PersistedInteraction?
     @State private var shelves: [Shelf] = []
     @State private var seriesRefs: [BookSeriesRef] = []
     @State private var activeLoan: Loan?
@@ -35,6 +42,7 @@ struct RedesignedBookDetailView: View {
     @State private var showScanner = false
     @State private var showActionStub = false
     @State private var actionStubLabel = ""
+    @State private var showRateSheet = false
     @State private var pendingSeriesID: String?
     @State private var loadedSeries: Series?
 
@@ -118,6 +126,13 @@ struct RedesignedBookDetailView: View {
                 currentBook = updated
             }
         }
+        .sheet(isPresented: $showRateSheet) {
+            RedesignedRateSheet(
+                initialRawRating: displayRawRating
+            ) { newRawRating in
+                Task { await applyRating(newRawRating) }
+            }
+        }
         .alert(actionStubLabel, isPresented: $showActionStub) {
             Button("OK") { }
         } message: {
@@ -168,8 +183,8 @@ struct RedesignedBookDetailView: View {
             // interaction) has loaded so the optimistic toggle has a
             // record to write to.
             navIconButton(
-                systemName: (interaction?.isFavorite == true) ? "bookmark.fill" : "bookmark",
-                tint: (interaction?.isFavorite == true) ? Theme.Colors.gold : Theme.Colors.appText
+                systemName: displayIsFavorite ? "bookmark.fill" : "bookmark",
+                tint: displayIsFavorite ? Theme.Colors.gold : Theme.Colors.appText
             ) {
                 Task { await toggleFavorite() }
             }
@@ -211,27 +226,109 @@ struct RedesignedBookDetailView: View {
         }
     }
 
-    /// Toggle the favorite flag on the primary edition's interaction.
-    /// The api requires the full UpdateInteractionRequest body (no PATCH
-    /// semantics yet), so we round-trip every field. UserBookInteraction
-    /// has no memberwise init so we can't optimistically construct a
-    /// flipped local copy — accept the network round-trip latency.
-    private func toggleFavorite() async {
-        guard let edition = primaryEdition, let i = interaction else { return }
-        let body = UpdateInteractionRequest(
-            readStatus: i.readStatus, rating: i.rating,
-            notes: i.notes, review: i.review,
-            dateStarted: i.dateStarted, dateFinished: i.dateFinished,
-            isFavorite: !i.isFavorite
-        )
-        let client = appState.makeClient(serverURL: library.serverURL)
-        do {
-            interaction = try await BookService(client: client)
-                .updateInteraction(libraryId: library.id, bookId: currentBook.id, editionId: edition.id, body: body)
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        } catch {
-            // No-op — the UI is unchanged because we didn't optimistically flip.
+    /// Mutate the local PersistedInteraction (creating it on the fly
+    /// if the row doesn't exist yet) and enqueue an outbox op. Returns
+    /// the account ID so the caller can kick a drain. Returns nil only
+    /// when the entity/edition/account refs can't be resolved.
+    private func writeLocal(_ mutate: (PersistedInteraction, Date) -> Void) -> UUID? {
+        guard let i = interaction,
+              let entityID = UUID(uuidString: i.id),
+              let editionID = (primaryEdition.flatMap { UUID(uuidString: $0.id) }),
+              let account = appState.accounts.first(where: { $0.url == library.serverURL })
+        else { return nil }
+
+        let now = Date()
+        let row: PersistedInteraction
+        if let p = persisted {
+            row = p
+        } else {
+            row = PersistedInteraction(
+                id: entityID,
+                serverAccountID: account.id,
+                bookEditionID: editionID,
+                readStatus: i.readStatus,
+                isFavorite: i.isFavorite,
+                updatedAt: SyncTimestampFormatter.shared.date(from: i.updatedAt) ?? now
+            )
+            row.rating = i.rating.map { Int($0) }
+            modelContext.insert(row)
+            persisted = row
         }
+
+        mutate(row, now)
+        row.updatedAt = now
+
+        do {
+            try modelContext.save()
+        } catch {
+            #if DEBUG
+            print("📤 [writeLocal] save failed: \(error)")
+            #endif
+            return nil
+        }
+        return account.id
+    }
+
+    private func kickDrain(accountID: UUID) {
+        let api = appState.makeClient(serverURL: library.serverURL)
+        let service = SyncService(
+            api: api,
+            serverAccountID: accountID,
+            modelContainer: modelContext.container
+        )
+        Task { try? await service.drainOutbox() }
+    }
+
+    /// Apply a new rating (or clear it) through the outbox.
+    /// Writes to PersistedInteraction first (source of truth), queues
+    /// a PendingSyncOp, then kicks a background drain.
+    private func applyRating(_ newRawRating: Int?) async {
+        guard let entityID = interaction.flatMap({ UUID(uuidString: $0.id) })
+        else { return }
+
+        let accountID = writeLocal { row, now in
+            row.rating = newRawRating
+            row.ratingUpdatedAt = now
+        }
+        guard let accountID else { return }
+
+        let op = PendingSyncOp.rating(
+            serverAccountID: accountID,
+            entityID: entityID,
+            value: newRawRating
+        )
+        modelContext.insert(op)
+        try? modelContext.save()
+
+        kickDrain(accountID: accountID)
+    }
+
+    /// Toggle the favorite flag through the outbox. PersistedInteraction
+    /// is the source of truth; @Observable makes the UI update when we
+    /// mutate it. `BookService.updateInteraction` PUT is gone for this
+    /// field; other fields still use it pending their own rewires.
+    private func toggleFavorite() async {
+        guard let entityID = interaction.flatMap({ UUID(uuidString: $0.id) })
+        else { return }
+        let newFavorite = !displayIsFavorite
+
+        let accountID = writeLocal { row, now in
+            row.isFavorite = newFavorite
+            row.isFavoriteUpdatedAt = now
+        }
+        guard let accountID else { return }
+
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+
+        let op = PendingSyncOp.isFavorite(
+            serverAccountID: accountID,
+            entityID: entityID,
+            value: newFavorite
+        )
+        modelContext.insert(op)
+        try? modelContext.save()
+
+        kickDrain(accountID: accountID)
     }
 
     // MARK: - Hero
@@ -411,20 +508,41 @@ struct RedesignedBookDetailView: View {
         }
     }
 
-    /// Display rating pulled from the loaded interaction. The api stores
-    /// the half-star integer (1–10); divide by 2 for a 0.0–5.0 display.
+    /// Raw (1-10) rating from the local source of truth: SwiftData
+    /// first, fall back to the api-loaded interaction. Returns nil
+    /// when nothing has been rated yet.
+    private var displayRawRating: Int? {
+        if let p = persisted, let r = p.rating, r > 0 { return r }
+        if let raw = interaction?.rating, raw > 0 { return Int(raw) }
+        return nil
+    }
+
+    /// Display rating (0.0-5.0). Half-star scale, derived from the
+    /// raw 1-10 value the api stores.
     private var displayRating: Double? {
-        guard let raw = interaction?.rating, raw > 0 else { return nil }
+        guard let raw = displayRawRating else { return nil }
         return Double(raw) / 2.0
+    }
+
+    /// Favorite state from the local source of truth.
+    private var displayIsFavorite: Bool {
+        if let p = persisted { return p.isFavorite }
+        return interaction?.isFavorite ?? false
     }
 
     @ViewBuilder
     private func ratingLine(rating: Double) -> some View {
         HStack(spacing: 6) {
             HStack(spacing: 1) {
-                ForEach(0..<5, id: \.self) { i in
-                    let filled = Double(i) < rating
-                    Image(systemName: filled ? "star.fill" : "star")
+                ForEach(1...5, id: \.self) { i in
+                    let halfValue = Double(i) - 0.5
+                    let fullValue = Double(i)
+                    let iconName: String = {
+                        if rating >= fullValue { return "star.fill" }
+                        if rating >= halfValue { return "star.leadinghalf.filled" }
+                        return "star"
+                    }()
+                    Image(systemName: iconName)
                         .font(.system(size: 12))
                 }
             }
@@ -444,7 +562,7 @@ struct RedesignedBookDetailView: View {
     private var quickActions: some View {
         HStack(spacing: 10) {
             qa(icon: "book.fill", label: "Re-read") { stub("Re-read") }
-            qa(icon: "star.fill", label: "Rate")    { stub("Rate") }
+            qa(icon: "star.fill", label: "Rate")    { showRateSheet = true }
             qa(icon: "bubble.left.fill", label: "Review") { stub("Review") }
             qa(icon: "arrow.up.arrow.down.circle.fill", label: "Loan") {
                 stub("Loan")
@@ -820,8 +938,39 @@ struct RedesignedBookDetailView: View {
         selectedEditionID = primary?.id
 
         if let pe = primary {
-            interaction = try? await BookService(client: client)
+            // Local-first: read whatever PersistedInteraction we already
+            // have so the UI populates instantly with the last-known
+            // synced state. The api fetch + backfill below refreshes it.
+            if let editionID = UUID(uuidString: pe.id) {
+                let descriptor = FetchDescriptor<PersistedInteraction>(
+                    predicate: #Predicate { $0.bookEditionID == editionID }
+                )
+                persisted = (try? modelContext.fetch(descriptor))?.first
+            }
+
+            let fetched = try? await BookService(client: client)
                 .interaction(libraryId: library.id, bookId: currentBook.id, editionId: pe.id)
+            interaction = fetched
+
+            // Backfill into SwiftData. The helper guards against
+            // clobbering newer per-field timestamps (e.g., an outbox
+            // edit queued locally), so a stale api read can't undo a
+            // pending local change.
+            if let dto = fetched,
+               let account = appState.accounts.first(where: { $0.url == library.serverURL }) {
+                SyncBackfill.writeInteraction(dto, serverAccountID: account.id, in: modelContext)
+                try? modelContext.save()
+
+                // If persisted was nil before (first interaction with
+                // this edition), backfill just created the row; pick
+                // it up now so the @State holds the canonical reference.
+                if persisted == nil, let editionID = UUID(uuidString: pe.id) {
+                    let descriptor = FetchDescriptor<PersistedInteraction>(
+                        predicate: #Predicate { $0.bookEditionID == editionID }
+                    )
+                    persisted = (try? modelContext.fetch(descriptor))?.first
+                }
+            }
         }
 
         await loadActiveLoan()

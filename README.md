@@ -1,6 +1,6 @@
 # librarium-ios
 
-Native iOS client for **[Librarium](https://librarium.press)** — a self-hosted, privacy-focused tracker for your physical book, manga, and comic collection. A self-hosted alternative to Libib and similar cloud catalog services.
+Native iOS client for **[Librarium](https://librarium.press)**, a self-hosted, privacy-focused tracker for your physical book, manga, and comic collection. A self-hosted alternative to Libib and similar cloud catalog services. iOS Lite and Librarium Plus (hosted) are on the roadmap.
 
 Swift · SwiftUI · iOS 26+. Talks to [`librarium-api`](https://github.com/fireball1725/librarium-api) over HTTP.
 
