@@ -43,6 +43,7 @@ struct RedesignedBookDetailView: View {
     @State private var showActionStub = false
     @State private var actionStubLabel = ""
     @State private var showRateSheet = false
+    @State private var showStatusSheet = false
     @State private var pendingSeriesID: String?
     @State private var loadedSeries: Series?
 
@@ -131,6 +132,13 @@ struct RedesignedBookDetailView: View {
                 initialRawRating: displayRawRating
             ) { newRawRating in
                 Task { await applyRating(newRawRating) }
+            }
+        }
+        .sheet(isPresented: $showStatusSheet) {
+            RedesignedStatusSheet(
+                initialStatus: displayReadStatus
+            ) { newStatus in
+                Task { await applyReadStatus(newStatus) }
             }
         }
         .alert(actionStubLabel, isPresented: $showActionStub) {
@@ -279,6 +287,31 @@ struct RedesignedBookDetailView: View {
         Task { try? await service.drainOutbox() }
     }
 
+    /// Apply a new read-status through the outbox. Same pattern as
+    /// toggleFavorite / applyRating: mutate PersistedInteraction first
+    /// (source of truth), enqueue a PendingSyncOp, kick a background
+    /// drain. Direct PUT to /my-interaction for this field is gone.
+    private func applyReadStatus(_ newStatus: String) async {
+        guard let entityID = interaction.flatMap({ UUID(uuidString: $0.id) })
+        else { return }
+
+        let accountID = writeLocal { row, now in
+            row.readStatus = newStatus
+            row.readStatusUpdatedAt = now
+        }
+        guard let accountID else { return }
+
+        let op = PendingSyncOp.readStatus(
+            serverAccountID: accountID,
+            entityID: entityID,
+            value: newStatus
+        )
+        modelContext.insert(op)
+        try? modelContext.save()
+
+        kickDrain(accountID: accountID)
+    }
+
     /// Apply a new rating (or clear it) through the outbox.
     /// Writes to PersistedInteraction first (source of truth), queues
     /// a PendingSyncOp, then kicks a background drain.
@@ -342,7 +375,7 @@ struct RedesignedBookDetailView: View {
                 height: 195,
                 title: currentBook.title,
                 author: primaryAuthor,
-                readStatus: interaction?.readStatus
+                readStatus: displayReadStatus
             )
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
@@ -452,9 +485,12 @@ struct RedesignedBookDetailView: View {
     @ViewBuilder
     private var metaPills: some View {
         HStack(spacing: 6) {
-            if let pill = statusPill {
-                pillView(text: pill.text, fg: pill.fg, bg: pill.bg, dot: pill.dot)
+            Button {
+                showStatusSheet = true
+            } label: {
+                pillView(text: statusPill.text, fg: statusPill.fg, bg: statusPill.bg, dot: statusPill.dot)
             }
+            .buttonStyle(.plain)
             if !currentBook.genres.isEmpty {
                 pillView(
                     text: currentBook.genres.first!.name,
@@ -491,20 +527,22 @@ struct RedesignedBookDetailView: View {
 
     private struct StatusPill { let text: String; let fg: Color; let bg: Color; let dot: Color? }
 
-    /// Status pill driven by the loaded interaction. Currently `Read`
-    /// (green dot), `Reading` (indigo dot), `Want to read` (gold dot),
-    /// `Unread` (subtle). No interaction → nothing surfaces.
-    private var statusPill: StatusPill? {
-        guard let i = interaction else { return nil }
-        switch i.readStatus {
+    /// Status pill driven by the local source of truth (PersistedInteraction
+    /// first, then the api-loaded DTO). Always renders a pill so the user
+    /// has a tap target; the muted "Unread" variant covers the not-yet-rated
+    /// case.
+    private var statusPill: StatusPill {
+        switch displayReadStatus {
         case "read":
             return StatusPill(text: "Read", fg: Theme.Colors.good, bg: Color(hex: 0x7bd6a8, opacity: 0.18), dot: Theme.Colors.good)
         case "reading":
             return StatusPill(text: "Reading", fg: Theme.Colors.accentStrong, bg: Theme.Colors.accentSoft, dot: Theme.Colors.accent)
         case "want_to_read", "want-to-read":
             return StatusPill(text: "Want to read", fg: Theme.Colors.gold, bg: Color(hex: 0xf3c971, opacity: 0.18), dot: Theme.Colors.gold)
+        case "did_not_finish":
+            return StatusPill(text: "Did not finish", fg: Theme.Colors.bad, bg: Color(hex: 0xff8a8a, opacity: 0.18), dot: Theme.Colors.bad)
         default:
-            return nil
+            return StatusPill(text: "Unread", fg: Theme.Colors.appText3, bg: Color.white.opacity(0.05), dot: nil)
         }
     }
 
@@ -524,10 +562,17 @@ struct RedesignedBookDetailView: View {
         return Double(raw) / 2.0
     }
 
-    /// Favorite state from the local source of truth.
+    /// Favourite state from the local source of truth.
     private var displayIsFavorite: Bool {
         if let p = persisted { return p.isFavorite }
         return interaction?.isFavorite ?? false
+    }
+
+    /// Read-status from the local source of truth. Defaults to
+    /// "unread" so the pill always has something to render.
+    private var displayReadStatus: String {
+        if let p = persisted { return p.readStatus }
+        return interaction?.readStatus ?? "unread"
     }
 
     @ViewBuilder

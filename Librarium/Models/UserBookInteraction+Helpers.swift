@@ -74,4 +74,23 @@ extension UserBookInteraction {
             updatedAt: updatedAt
         )
     }
+
+    /// Copy with `readStatus` overridden.
+    func with(readStatus: String, updatedAt: String) -> UserBookInteraction {
+        UserBookInteraction(
+            id: id,
+            userId: userId,
+            bookEditionId: bookEditionId,
+            readStatus: readStatus,
+            rating: rating,
+            notes: notes,
+            review: review,
+            dateStarted: dateStarted,
+            dateFinished: dateFinished,
+            isFavorite: isFavorite,
+            rereadCount: rereadCount,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
 }
