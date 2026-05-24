@@ -12,9 +12,8 @@ import SwiftUI
 /// even before real cover thumbnails are wired in.
 ///
 /// v1 keeps it simple: load from every signed-in account, no offline
-/// merge yet. The legacy LibrariesView retains the rich offline / reauth
-/// / drag-reorder UX; we'll layer those back on this view as the redesign
-/// matures.
+/// merge yet. Rich offline / drag-reorder UX from the previous library
+/// list will get layered back on as the redesign matures.
 /// VM for `RedesignedLibrariesView`. Held in `@State` on the view; the
 /// reference is stable across body recomputes so closures captured by
 /// `.task` / `.refreshable` keep their identity. That sidesteps the

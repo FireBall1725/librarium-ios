@@ -141,8 +141,8 @@ final class APIClient {
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         req.httpBody = body
         // Default URLSession timeout is 60s. Offline/unreachable requests should
-        // fail fast so cache fallback (LibrariesView) can render within a few
-        // seconds instead of leaving the user staring at a spinner.
+        // fail fast so the libraries list can render its cached fallback within
+        // a few seconds instead of leaving the user staring at a spinner.
         req.timeoutInterval = 10
         return req
     }

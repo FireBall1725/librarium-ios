@@ -8,8 +8,7 @@ import SwiftUI
 /// Profile head (avatar + name + admin badge) → reading stats strip →
 /// Servers list (status + per-server library count, tap to switch primary,
 /// "Add a server" row at the bottom) → App section (legacy account
-/// management for advanced changes, sign out, version with redesign-flag
-/// long-press toggle).
+/// management for advanced changes, sign out, version row).
 ///
 /// AI tuning + My reviews + a dedicated Change-password sheet from the
 /// mockup are deferred — the legacy `ProfileView` Form covers password
@@ -17,14 +16,12 @@ import SwiftUI
 struct RedesignedProfileView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(RedesignFlag.key) private var redesignEnabled = true
 
     @State private var vm = RedesignedProfileViewModel()
     @State private var showAddServer = false
     @State private var manageAccount: ServerAccount?
     @State private var confirmRemove: ServerAccount?
     @State private var confirmSignOut = false
-    @State private var redesignToastVisible = false
 
     var body: some View {
         ZStack {
@@ -42,19 +39,7 @@ struct RedesignedProfileView: View {
                 .padding(.bottom, 40)
             }
             .scrollIndicators(.hidden)
-            .overlay(alignment: .top) {
-                if redesignToastVisible {
-                    redesignToast
-                        .padding(.top, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                        .task {
-                            try? await Task.sleep(nanoseconds: 1_500_000_000)
-                            withAnimation { redesignToastVisible = false }
-                        }
-                }
-            }
         }
-        .animation(.easeOut(duration: 0.2), value: redesignToastVisible)
         .task { await vm.load(appState: appState) }
         .refreshable { await vm.load(appState: appState) }
         .sheet(isPresented: $showAddServer) {
@@ -394,9 +379,6 @@ struct RedesignedProfileView: View {
         .buttonStyle(.plain)
     }
 
-    /// Long-press the version row to toggle the redesign flag — same
-    /// behaviour as the legacy ProfileView's "About" footer so the user
-    /// can flip back without diving into Settings.
     @ViewBuilder
     private var versionRow: some View {
         HStack(spacing: 12) {
@@ -418,12 +400,6 @@ struct RedesignedProfileView: View {
                 .monospacedDigit()
         }
         .padding(14)
-        .contentShape(Rectangle())
-        .onLongPressGesture(minimumDuration: 1.0) {
-            redesignEnabled.toggle()
-            redesignToastVisible = true
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        }
     }
 
     private var versionString: String {
@@ -431,18 +407,6 @@ struct RedesignedProfileView: View {
         let marketing = (info?["CFBundleShortVersionString"] as? String) ?? "?"
         let build = (info?["CFBundleVersion"] as? String) ?? "?"
         return "\(marketing) (build \(build))"
-    }
-
-    @ViewBuilder
-    private var redesignToast: some View {
-        let label = redesignEnabled ? "Redesign preview ON" : "Redesign preview OFF"
-        let icon = redesignEnabled ? "sparkles" : "circle.slash"
-        Label(label, systemImage: icon)
-            .font(.footnote.weight(.semibold))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.thinMaterial, in: Capsule())
-            .overlay(Capsule().stroke(Theme.Colors.appLine))
     }
 
     // MARK: - Menu section helper

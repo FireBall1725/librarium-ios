@@ -3,28 +3,27 @@
 
 import SwiftUI
 
-/// 5-tab redesigned app shell (mockup IA): Home · Search · [Scan] · Library · Profile.
+/// 5-tab redesigned app shell (mockup IA): Home · Search · [Scan] · Library · Series.
 ///
 /// Implementation notes:
 ///
-/// - Uses a `TabView` with the system tab bar hidden (`.toolbar(.hidden, for: .tabBar)`),
-///   plus a custom `EditorialTabBar` overlay so we get the floating glass-pill
-///   look from the mockup. Switching the system bar off keeps tab-state
-///   preservation (each tab keeps its NavigationStack history).
+/// - Rolls its own floating `EditorialTabBar` overlay rather than using
+///   `TabView` — iOS 26's TabView ships a built-in floating bar that
+///   `.toolbar(.hidden, for: .tabBar)` doesn't suppress reliably. Each
+///   tab's view tree is kept alive in a `ZStack` (toggled via opacity)
+///   so internal `@State` + NavigationStack history persist across
+///   switches.
 ///
-/// - The Library tab swaps between `RedesignedLibrariesView` (entry list)
-///   and the legacy `LibraryTabView` (Books / Shelves / Series / Loans /
-///   Members) based on a local `selectedLibrary` state. Until we rebuild
-///   the library context (deferred), the floating bar **hides** when the
-///   user has drilled into a library so the legacy inner tab bar is
-///   unobstructed. They get back to the floating bar by tapping back.
+/// - The Library tab drives a local `selectedLibrary`: nil shows
+///   `RedesignedLibrariesView`, non-nil pushes `RedesignedBooksView`
+///   in a NavigationStack. Shelves / Loans / Members are not yet wired
+///   into the new shell — those screens need to be rebuilt against the
+///   mockup before they're reachable again.
 ///
-/// - Home / Search are placeholder screens for v1. Profile reuses the
-///   existing `ProfileView` (still has the long-press toggle for the flag).
+/// - Profile is presented as a sheet from the Home tab's avatar (see
+///   `RedesignedHomeView`), not a top-level tab.
 ///
-/// - The center Scan button is a stub for v1 — alerts the user to use the
-///   scan icon inside a library for now. Wiring the redesigned scan flow
-///   happens with the camera screen rebuild.
+/// - The center Scan FAB opens `RedesignedScanFlow` as a fullScreenCover.
 struct RedesignedAppShell: View {
     @Environment(AppState.self) private var appState
 
@@ -74,10 +73,9 @@ struct RedesignedAppShell: View {
             .contentMargins(.bottom, 90, for: .scrollContent)
 
             // Floating editorial bar — visible across all tabs and across
-            // library list ↔ library detail. The legacy LibraryTabView
-            // (Books / Shelves / Series / Loans / Members) is no longer
-            // wrapped in the redesigned flow; Shelves/Series/Loans/Members
-            // are deferred to follow-up screens (per `plans/ios-redesign/PLAN.md`).
+            // library list ↔ library detail. Shelves / Loans / Members
+            // have no entry point here yet; rebuilding those screens
+            // against the mockup is tracked in `plans/ios-redesign/PLAN.md`.
             EditorialTabBar(
                 selected: $selectedTab,
                 highlight: logicalTabOverride ?? selectedTab,
