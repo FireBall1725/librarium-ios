@@ -31,6 +31,7 @@ struct LiteAccountSettingsView: View {
         Form {
             Section {
                 TextField("Your name", text: $personName)
+                    .textContentType(.givenName)
                     .textInputAutocapitalization(.words)
                     .focused($nameFocused)
                     .submitLabel(.done)

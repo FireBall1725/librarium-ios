@@ -24,6 +24,8 @@ struct ProfileView: View {
     @State private var profileMessage: Message?
     @State private var passwordMessage: Message?
 
+    @State private var confirmRemove = false
+
     struct Message {
         let text: String
         let success: Bool
@@ -152,9 +154,31 @@ struct ProfileView: View {
             } header: {
                 Text("About")
             }
+
+            Section {
+                Button(role: .destructive) {
+                    confirmRemove = true
+                } label: {
+                    Label("Remove this server", systemImage: "trash")
+                }
+            } footer: {
+                Text("Signs out of \(account.name) and clears its cached libraries on this device. The server itself isn't affected.")
+            }
         }
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Remove \(account.name)?",
+            isPresented: $confirmRemove,
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                appState.removeAccount(id: account.id)
+                dismiss()
+            }
+        } message: {
+            Text("This signs you out of \(account.name) and clears its cached libraries on this device. The server itself isn't affected.")
+        }
     }
 
     /// "26.4.4 (build 1138)" — pulled from Info.plist at runtime so it

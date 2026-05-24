@@ -44,11 +44,12 @@ struct RedesignedProfileView: View {
         .task { await vm.load(appState: appState) }
         .refreshable { await vm.load(appState: appState) }
         .sheet(isPresented: $showAddServer) {
-            NavigationStack {
-                AddServerView(isFirstTime: false) {
-                    Task { await vm.load(appState: appState) }
-                }
-            }
+            AddAccountFlow(onComplete: {
+                showAddServer = false
+                Task { await vm.load(appState: appState) }
+            })
+            .environment(appState)
+            .presentationDragIndicator(.visible)
         }
         .sheet(item: $manageAccount) { account in
             NavigationStack {
@@ -63,6 +64,7 @@ struct RedesignedProfileView: View {
             NavigationStack {
                 TelemetrySettingsView()
             }
+            .presentationDragIndicator(.visible)
         }
         .confirmationDialog(
             "Remove server?",
@@ -272,10 +274,29 @@ struct RedesignedProfileView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button("Manage") { manageAccount = account }
-                .tint(Theme.Colors.accent)
-            Button("Remove", role: .destructive) { confirmRemove = account }
+        // The server list is a VStack, not a List, so `.swipeActions`
+        // is silently dead here. Use a long-press context menu instead
+        // so the affordance is discoverable, and put Manage/Remove
+        // behind it explicitly.
+        .contextMenu {
+            if !isPrimary {
+                Button {
+                    appState.setPrimaryAccount(id: account.id)
+                    Task { await vm.load(appState: appState) }
+                } label: {
+                    Label("Make preferred", systemImage: "star.fill")
+                }
+            }
+            Button {
+                manageAccount = account
+            } label: {
+                Label("Manage", systemImage: "gear")
+            }
+            Button(role: .destructive) {
+                confirmRemove = account
+            } label: {
+                Label("Remove", systemImage: "trash")
+            }
         }
     }
 

@@ -190,7 +190,7 @@ struct RedesignedHomeView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(.hidden, for: .navigationBar)
-            .task { await vm.load(appState: appState) }
+            .task(id: appState.accounts.map(\.id)) { await vm.load(appState: appState) }
             .refreshable { await vm.load(appState: appState) }
             .navigationDestination(item: $loadedDetail) { detail in
                 RedesignedBookDetailView(library: detail.library, book: detail.book)

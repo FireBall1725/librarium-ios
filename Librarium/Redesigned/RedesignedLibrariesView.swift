@@ -203,7 +203,9 @@ struct RedesignedLibrariesView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(.hidden, for: .navigationBar)
-            .task { await vm.load(appState: appState, modelContainer: modelContext.container) }
+            .task(id: appState.accounts.map(\.id)) {
+                await vm.load(appState: appState, modelContainer: modelContext.container)
+            }
             .refreshable { await vm.load(appState: appState, modelContainer: modelContext.container) }
             .sheet(item: $reauthAccount) { account in
                 ReauthSheet(account: account)

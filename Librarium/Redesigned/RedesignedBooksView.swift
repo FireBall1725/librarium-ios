@@ -23,6 +23,15 @@ struct RedesignedBooksView: View {
     @State private var showAdd = false
     @State private var selectedBook: Book?
 
+    /// True for a Lite-mode local library. Gates every api call below so
+    /// URLSession never sees the synthetic `local://` base URL, and hides
+    /// the add-book affordance until the SwiftData book write path lands
+    /// (PR2). Single source of truth so adding more api call sites
+    /// stays safe.
+    private var isLocalLibrary: Bool {
+        library.serverURL.hasPrefix("local://")
+    }
+
     var body: some View {
         ZStack {
             Theme.Colors.appBackground.ignoresSafeArea()
@@ -40,7 +49,12 @@ struct RedesignedBooksView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .task {
-            guard vm.books.isEmpty else { return }
+            // Local (Lite) libraries have no api endpoint to call against —
+            // their books live in SwiftData (wired in PR2). For now we
+            // render the empty state and skip the api round-trip entirely,
+            // which is also what suppresses the "unsupported URL" alert
+            // that bites when URLSession sees a `local://` base URL.
+            guard !isLocalLibrary, vm.books.isEmpty else { return }
             if appState.isOffline {
                 vm.loadFromCache(offlineKey: library.clientKey)
             } else {
@@ -48,12 +62,13 @@ struct RedesignedBooksView: View {
             }
         }
         .refreshable {
+            guard !isLocalLibrary else { return }
             if !appState.isOffline {
                 await vm.load(client: appState.makeClient(serverURL: library.serverURL), libraryId: library.id)
             }
         }
         .onChange(of: vm.searchText) { _, _ in
-            guard !appState.isOffline else { return }
+            guard !isLocalLibrary, !appState.isOffline else { return }
             searchTask?.cancel()
             searchTask = Task {
                 try? await Task.sleep(for: .milliseconds(350))
@@ -62,11 +77,11 @@ struct RedesignedBooksView: View {
             }
         }
         .onChange(of: vm.sortOption) { _, _ in
-            guard !appState.isOffline else { return }
+            guard !isLocalLibrary, !appState.isOffline else { return }
             Task { await vm.search(client: appState.makeClient(serverURL: library.serverURL), libraryId: library.id) }
         }
         .onChange(of: vm.selectedMediaType) { _, _ in
-            guard !appState.isOffline else { return }
+            guard !isLocalLibrary, !appState.isOffline else { return }
             Task { await vm.search(client: appState.makeClient(serverURL: library.serverURL), libraryId: library.id) }
         }
         .sheet(isPresented: $showAdd) {
@@ -110,15 +125,17 @@ struct RedesignedBooksView: View {
             sortMenu
                 .padding(.bottom, 4)
 
-            Button(action: { showAdd = true }) {
-                Image(systemName: "plus")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.accent)
-                    .frame(width: 38, height: 38)
-                    .background(Color.white.opacity(0.08), in: Circle())
-                    .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+            if !isLocalLibrary {
+                Button(action: { showAdd = true }) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.accent)
+                        .frame(width: 38, height: 38)
+                        .background(Color.white.opacity(0.08), in: Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                }
+                .padding(.bottom, 4)
             }
-            .padding(.bottom, 4)
         }
         .padding(.horizontal, 18)
         .padding(.top, 12)

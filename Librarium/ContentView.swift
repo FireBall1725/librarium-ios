@@ -31,11 +31,6 @@ struct ContentView: View {
                 maybeShowTelemetryOptIn(source: "splash-dismissed")
             }
         }
-        .onChange(of: appState.isAuthenticated) { _, authed in
-            if authed {
-                maybeShowTelemetryOptIn(source: "auth-flipped")
-            }
-        }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 Task { await runSyncAllAccounts() }
@@ -49,12 +44,12 @@ struct ContentView: View {
         }
     }
 
-    /// Surface the opt-in sheet on the first authenticated launch and
-    /// on upgrades from a build that never had telemetry. Once the
-    /// user has either enabled or declined the sheet never appears
-    /// again. Multiple triggers (initial .task, splash dismissal,
-    /// auth flipping) all funnel through this single guarded check
-    /// so whichever fires first wins.
+    /// Upgrade fallback for users who signed in on a build that predates
+    /// the new OOBE — they're already authenticated, so the OOBE flow
+    /// never runs, but they also never made a telemetry decision. Show
+    /// the sheet once and let them choose. New installs hit the OOBE
+    /// telemetry stage before authenticating, so this guard always
+    /// short-circuits for them.
     private func maybeShowTelemetryOptIn(source: String) {
         let auth = appState.isAuthenticated
         let decided = telemetry.hasDecided
@@ -63,7 +58,7 @@ struct ContentView: View {
         #endif
         guard auth, !decided, !showSplash else { return }
         #if DEBUG
-        print("📊 [Telemetry] triggering opt-in cover")
+        print("📊 [Telemetry] triggering opt-in cover (upgrade path)")
         #endif
         showTelemetryOptIn = true
     }
@@ -73,7 +68,7 @@ struct ContentView: View {
         if appState.isAuthenticated {
             RedesignedAppShell()
         } else {
-            AddServerView(isFirstTime: true, onComplete: {})
+            AddAccountFlow()
         }
     }
 

@@ -11,45 +11,102 @@ struct TelemetryOptInSheet: View {
     let onEnable: () -> Void
     let onDecline: () -> Void
 
-    @State private var showExample = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        ZStack {
+            Theme.Colors.appBackground.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    header
-                    sentSection
-                    notSentSection
-                    exampleSection
+                    TelemetryFactsView(showHero: true)
                     Text("You can change this any time in Profile → Telemetry.")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.Colors.appText3)
                 }
                 .padding(.horizontal, 22)
-                .padding(.top, 12)
-                .padding(.bottom, 120)
+                .padding(.top, 36)
+                .padding(.bottom, 180)
             }
-            .background(Theme.Colors.appBackground.ignoresSafeArea())
+            .scrollIndicators(.hidden)
             .safeAreaInset(edge: .bottom) { actionBar }
-            .navigationTitle("Help improve Librarium")
-            .navigationBarTitleDisplayMode(.inline)
         }
     }
 
-    // MARK: - Sections
+    @ViewBuilder
+    private var actionBar: some View {
+        VStack(spacing: 12) {
+            Button {
+                onEnable()
+                dismiss()
+            } label: {
+                HStack {
+                    Spacer()
+                    Text("Enable telemetry")
+                        .font(.system(size: 15, weight: .semibold))
+                    Spacer()
+                }
+                .padding(.vertical, 14)
+                .background(Theme.Colors.accent, in: RoundedRectangle(cornerRadius: 14))
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                onDecline()
+                dismiss()
+            } label: {
+                Text("Not now")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.Colors.appText3)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 14)
+        .padding(.bottom, 22)
+        .background(Theme.Colors.appBackground.opacity(0.95))
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Theme.Colors.appLine)
+                .frame(height: 0.5)
+        }
+    }
+
+}
+
+/// Reusable hero + "what gets / never gets sent" block. Drawn the same
+/// way in the first-launch opt-in sheet and the in-app telemetry
+/// settings screen so the copy stays in sync between the two surfaces.
+/// `showHero` toggles the chart-icon + headline + description block —
+/// the settings screen can pair the bullets with a different header
+/// (e.g., the current opt-in state) when needed.
+struct TelemetryFactsView: View {
+    var showHero: Bool = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if showHero { hero }
+            sentSection
+            notSentSection
+        }
+    }
 
     @ViewBuilder
-    private var header: some View {
+    private var hero: some View {
         VStack(alignment: .leading, spacing: 10) {
             Image(systemName: "chart.bar.fill")
-                .font(.system(size: 32))
+                .font(.system(size: 36))
                 .foregroundStyle(Theme.Colors.accent)
-            Text("Anonymous usage telemetry helps us see which parts of Librarium are actually used and where the rough edges are. It is opt-in and off by default.")
-                .font(.system(size: 15))
+                .accessibilityHidden(true)
+            Text("Help improve Librarium")
+                .font(Theme.Fonts.heroTitle)
                 .foregroundStyle(Theme.Colors.appText)
+            Text("Anonymous usage telemetry tells us which parts of Librarium are actually used and where the rough edges are. It's opt-in and off by default.")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Theme.Colors.appText3)
         }
-        .padding(.top, 4)
     }
 
     @ViewBuilder
@@ -72,76 +129,6 @@ struct TelemetryOptInSheet: View {
             bullet("Any identifier that could be traced back to you or your library")
         }
     }
-
-    @ViewBuilder
-    private var exampleSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                withAnimation { showExample.toggle() }
-            } label: {
-                HStack {
-                    Image(systemName: showExample ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text(showExample ? "Hide example signal" : "See an example signal")
-                        .font(.system(size: 14, weight: .semibold))
-                }
-                .foregroundStyle(Theme.Colors.accent)
-            }
-            .buttonStyle(.plain)
-
-            if showExample {
-                Text(exampleJSON)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.Colors.appText2)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Theme.Colors.appCard)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Theme.Colors.appLine, lineWidth: 0.5)
-                            )
-                    )
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var actionBar: some View {
-        VStack(spacing: 10) {
-            Button {
-                onEnable()
-                dismiss()
-            } label: {
-                Text("Enable telemetry")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Theme.Colors.accent, in: RoundedRectangle(cornerRadius: 12))
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                onDecline()
-                dismiss()
-            } label: {
-                Text("Not now")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Theme.Colors.appText2)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 22)
-        .padding(.top, 12)
-        .padding(.bottom, 22)
-        .background(.regularMaterial)
-    }
-
-    // MARK: - Helpers
 
     @ViewBuilder
     private func section(
@@ -173,18 +160,5 @@ struct TelemetryOptInSheet: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.Colors.appText2)
         }
-    }
-
-    private var exampleJSON: String {
-        """
-        TelemetryDeck.signal(
-            "book_detail_opened",
-            parameters: ["media_type": "manga"]
-        )
-
-        // The SDK then attaches automatically:
-        //   anonymous install id, session id,
-        //   app version, device class.
-        """
     }
 }

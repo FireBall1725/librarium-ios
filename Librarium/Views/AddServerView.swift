@@ -3,6 +3,11 @@ import SwiftUI
 
 struct AddServerView: View {
     let isFirstTime: Bool
+    /// Whether the "Use without a server" footer link is rendered. False
+    /// during the OOBE because the user already picked a path on the
+    /// choice screen; true everywhere else so the option is still
+    /// discoverable from Profile → Add Server.
+    var showLocalOption: Bool = true
     var onComplete: () -> Void
 
     @Environment(AppState.self) private var appState
@@ -131,25 +136,27 @@ struct AddServerView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
 
-                Section {
-                    Button {
-                        createLocalAccount()
-                    } label: {
-                        HStack {
-                            Spacer()
-                            Text("Use without a server")
-                                .font(.footnote.weight(.medium))
-                            Spacer()
+                if showLocalOption {
+                    Section {
+                        Button {
+                            createLocalAccount()
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Text("Use without a server")
+                                    .font(.footnote.weight(.medium))
+                                Spacer()
+                            }
                         }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    } footer: {
+                        Text("No account, no signup — your library stays on this device.")
+                            .font(.caption2)
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                } footer: {
-                    Text("No account, no signup — your library stays on this device.")
-                        .font(.caption2)
-                        .frame(maxWidth: .infinity, alignment: .center)
+                    .listRowBackground(Color.clear)
                 }
-                .listRowBackground(Color.clear)
             }
             .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
