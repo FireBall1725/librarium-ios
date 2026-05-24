@@ -271,7 +271,8 @@ struct AddServerView: View {
             url: url,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
-            user: tokens.user
+            user: tokens.user,
+            accessTokenExpiresAt: Date().addingTimeInterval(TimeInterval(tokens.expiresIn))
         )
         appState.addAccount(account)
         onComplete()
