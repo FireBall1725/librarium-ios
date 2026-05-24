@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// Redesigned series detail — mockup card #11.
@@ -18,6 +19,7 @@ struct RedesignedSeriesDetailView: View {
     let library: Library
     let series: Series
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
     @State private var vm = RedesignedSeriesDetailViewModel()
@@ -47,8 +49,18 @@ struct RedesignedSeriesDetailView: View {
         // Light up the Series tab on the floating bar regardless of
         // which tab the user navigated from.
         .preference(key: LogicalTabPreferenceKey.self, value: AppTab.series)
-        .task { await vm.load(library: library, series: series, appState: appState) }
-        .refreshable { await vm.load(library: library, series: series, appState: appState) }
+        .task {
+            await vm.load(
+                library: library, series: series,
+                appState: appState, modelContainer: modelContext.container
+            )
+        }
+        .refreshable {
+            await vm.load(
+                library: library, series: series,
+                appState: appState, modelContainer: modelContext.container
+            )
+        }
         .navigationDestination(item: $selectedBook) { book in
             RedesignedBookDetailView(library: library, book: book)
         }
@@ -579,9 +591,19 @@ final class RedesignedSeriesDetailViewModel {
     var arcs: [SeriesArc] = []
     var isLoading = true
 
-    func load(library: Library, series: Series, appState: AppState) async {
+    func load(library: Library, series: Series, appState: AppState, modelContainer: ModelContainer) async {
         isLoading = true
         defer { isLoading = false }
+
+        // Offline / unreachable-server short-circuit. Reads positions
+        // (cached on previous online visits) and pairs them with cached
+        // Book payloads. Arcs aren't cached yet so they degrade to "no
+        // arcs"; books still render in position order.
+        if NetworkMonitor.shared.shouldSkipAPI(for: library.serverURL) {
+            loadFromCache(library: library, series: series, modelContainer: modelContainer)
+            return
+        }
+
         let client = appState.makeClient(serverURL: library.serverURL)
 
         // 1. Entries (positions + arc assignments) and arcs in parallel.
@@ -593,7 +615,12 @@ final class RedesignedSeriesDetailViewModel {
         let entries: [SeriesEntry]
         do {
             entries = try await entriesTask
+            NetworkMonitor.shared.markServerReachable(library.serverURL)
         } catch {
+            // api failed — fall back to cache and remember to skip the
+            // api on the next visit within the minute.
+            NetworkMonitor.shared.markServerUnreachable(library.serverURL)
+            loadFromCache(library: library, series: series, modelContainer: modelContainer)
             return
         }
         positions = Dictionary(uniqueKeysWithValues: entries.map { ($0.bookId, $0.position) })
@@ -601,8 +628,21 @@ final class RedesignedSeriesDetailViewModel {
             entry.arcId.map { (entry.bookId, $0) }
         })
 
+        // Cache the entries so the next offline visit can render the
+        // same volume list. accountID lookup is best-effort — if it
+        // misses we still render online; just no cache write.
+        if let accountID = appState.accounts.first(where: { $0.url == library.serverURL })?.id {
+            SeriesCache(modelContainer: modelContainer)
+                .upsertEntries(entries, for: library, seriesId: series.id, serverAccountID: accountID)
+        }
+
         if let loadedArcs = try? await arcsTask {
             arcs = loadedArcs.sorted { $0.position < $1.position }
+            // Write through so offline visits get the same arc layout.
+            if let accountID = appState.accounts.first(where: { $0.url == library.serverURL })?.id {
+                ArcCache(modelContainer: modelContainer)
+                    .upsert(loadedArcs, for: library, seriesId: series.id, serverAccountID: accountID)
+            }
         }
 
         // 2. Fetch each entry's full Book in parallel — required to get
@@ -624,6 +664,36 @@ final class RedesignedSeriesDetailViewModel {
         if !fetched.isEmpty || entries.isEmpty {
             books = fetched.sorted { (positions[$0.id] ?? 0) < (positions[$1.id] ?? 0) }
         }
+    }
+
+    /// Pure-cache load — used by the offline short-circuit and the
+    /// api-failure catch. Pulls cached entries from SeriesCache, arcs
+    /// from ArcCache, and pairs each entry with its cached Book
+    /// payload. The unified LibrarySync writes all three caches on
+    /// every kept-offline pass, so offline detail matches the online
+    /// layout exactly.
+    private func loadFromCache(library: Library, series: Series, modelContainer: ModelContainer) {
+        let seriesCache = SeriesCache(modelContainer: modelContainer)
+        let arcCache = ArcCache(modelContainer: modelContainer)
+        let bookCache = BookCache(modelContainer: modelContainer)
+        let cached = seriesCache.entries(
+            serverURL: library.serverURL,
+            libraryId: library.id,
+            seriesId: series.id
+        )
+        positions = Dictionary(uniqueKeysWithValues: cached.map { ($0.bookId, $0.position) })
+        arcAssignments = Dictionary(uniqueKeysWithValues: cached.compactMap { entry in
+            entry.arcId.map { (entry.bookId, $0) }
+        })
+        arcs = arcCache.arcs(for: library, seriesId: series.id)
+        let cachedBooks: [Book] = cached.compactMap { entry in
+            bookCache.book(
+                serverURL: library.serverURL,
+                libraryId: library.id,
+                bookId: entry.bookId
+            )
+        }
+        books = cachedBooks.sorted { (positions[$0.id] ?? 0) < (positions[$1.id] ?? 0) }
     }
 
     /// Book + position pairs for the volume rows, sorted ascending.

@@ -8,7 +8,13 @@ final class AppState {
 
     private(set) var accounts: [ServerAccount] = []
     var isAuthenticated: Bool { !accounts.isEmpty }
-    var isOffline = false
+    /// Reflects the live network reachability — true when there's no
+    /// satisfied network path, which is the airplane-mode case. View
+    /// code uses this to skip api round-trips and read from cache
+    /// directly instead of paying URLSession's 10-second timeout.
+    /// Reading via `appState.isOffline` automatically observes the
+    /// underlying `NetworkMonitor.shared.isOnline` thanks to `@Observable`.
+    var isOffline: Bool { !NetworkMonitor.shared.isOnline }
 
     var currentUser: User? { primaryAccount?.user ?? accounts.first?.user }
 
@@ -71,6 +77,77 @@ final class AppState {
             primaryAccountID = account.id
             savePrimary()
         }
+    }
+
+    /// Create a Lite-mode local account whose data lives in SwiftData on this
+    /// device — no server URL, no tokens. The display name doubles as the
+    /// account name and the local "user" display name; it's purely cosmetic
+    /// (sync handshakes don't apply).
+    @discardableResult
+    func addLocalAccount(displayName: String) -> ServerAccount {
+        let id = UUID()
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = trimmed.isEmpty ? "Local" : trimmed
+        let user = User(
+            id: "local-\(id.uuidString.prefix(8))",
+            username: "local",
+            email: "",
+            displayName: resolved,
+            isInstanceAdmin: false
+        )
+        let account = ServerAccount(
+            id: id,
+            name: resolved,
+            url: ServerAccount.localURL(for: id),
+            accessToken: "",
+            refreshToken: "",
+            user: user,
+            kind: .local
+        )
+        accounts.append(account)
+        saveAccounts()
+        if primaryAccountID == nil {
+            primaryAccountID = id
+            savePrimary()
+        }
+        return account
+    }
+
+    /// True when every account on this device is Lite-mode local. Lets the UI
+    /// hide server-bound affordances (sync indicator, reachability banner)
+    /// without having to thread `kind` through every consumer.
+    var isLocalOnly: Bool {
+        !accounts.isEmpty && accounts.allSatisfy { $0.kind == .local }
+    }
+
+    /// Update the synthetic user attached to a local account. Lite has no
+    /// server-side identity, so this just rewrites the local `User` row;
+    /// the Home greeting and Profile avatar pick the new value up via
+    /// `currentUser` / `primaryAccount`.
+    func setLocalUserDisplayName(_ displayName: String, for accountID: UUID) {
+        guard let i = accounts.firstIndex(where: { $0.id == accountID }),
+              accounts[i].kind == .local else { return }
+        let existing = accounts[i].user
+        let updated = User(
+            id: existing.id,
+            username: existing.username,
+            email: existing.email,
+            displayName: displayName,
+            isInstanceAdmin: false
+        )
+        accounts[i].user = updated
+        saveAccounts()
+    }
+
+    /// Rename a local account in place. The account's display name doubles
+    /// as the per-library label and the server-row chip in Profile, so
+    /// callers should also update the matching `PersistedLibrary.name` so
+    /// the libraries grid card stays in sync.
+    func setLocalAccountName(_ name: String, for accountID: UUID) {
+        guard let i = accounts.firstIndex(where: { $0.id == accountID }),
+              accounts[i].kind == .local else { return }
+        accounts[i].name = name
+        saveAccounts()
     }
 
     func updateAccountName(_ name: String, for id: UUID) {
@@ -137,7 +214,6 @@ final class AppState {
         accounts = []
         activeAccountID = nil
         primaryAccountID = nil
-        isOffline = false
         UserDefaults.standard.removeObject(forKey: "server_accounts")
         UserDefaults.standard.removeObject(forKey: "primary_account_id")
         for url in urls {
@@ -261,8 +337,9 @@ final class AppState {
         // read, which manifested as "open app, briefly see library, bounced
         // to add-server" whenever the Keychain hiccupped.
         accounts = metas.map { meta in
-            let access = KeychainService.shared.get("access_\(meta.id.uuidString)") ?? ""
-            let refresh = KeychainService.shared.get("refresh_\(meta.id.uuidString)") ?? ""
+            let kind = meta.kind ?? .remote
+            let access = kind == .local ? "" : (KeychainService.shared.get("access_\(meta.id.uuidString)") ?? "")
+            let refresh = kind == .local ? "" : (KeychainService.shared.get("refresh_\(meta.id.uuidString)") ?? "")
             return ServerAccount(
                 id: meta.id,
                 name: meta.name,
@@ -270,7 +347,8 @@ final class AppState {
                 accessToken: access,
                 refreshToken: refresh,
                 user: meta.user,
-                accessTokenExpiresAt: meta.accessTokenExpiresAt
+                accessTokenExpiresAt: meta.accessTokenExpiresAt,
+                kind: kind
             )
         }
         if let raw = UserDefaults.standard.string(forKey: "primary_account_id"),
@@ -281,7 +359,7 @@ final class AppState {
     }
 
     private func saveAccounts() {
-        let metas = accounts.map { ServerAccountMeta(id: $0.id, name: $0.name, url: $0.url, user: $0.user, accessTokenExpiresAt: $0.accessTokenExpiresAt) }
+        let metas = accounts.map { ServerAccountMeta(id: $0.id, name: $0.name, url: $0.url, user: $0.user, accessTokenExpiresAt: $0.accessTokenExpiresAt, kind: $0.kind) }
         if let data = try? JSONEncoder().encode(metas) {
             UserDefaults.standard.set(data, forKey: "server_accounts")
         }

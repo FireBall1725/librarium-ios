@@ -1,10 +1,17 @@
+import SwiftData
 import SwiftUI
 
 struct AddServerView: View {
     let isFirstTime: Bool
+    /// Whether the "Use without a server" footer link is rendered. False
+    /// during the OOBE because the user already picked a path on the
+    /// choice screen; true everywhere else so the option is still
+    /// discoverable from Profile → Add Server.
+    var showLocalOption: Bool = true
     var onComplete: () -> Void
 
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
     @State private var serverURL = ""
@@ -128,6 +135,28 @@ struct AddServerView: View {
                 }
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+
+                if showLocalOption {
+                    Section {
+                        Button {
+                            createLocalAccount()
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Text("Use without a server")
+                                    .font(.footnote.weight(.medium))
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    } footer: {
+                        Text("No account, no signup — your library stays on this device.")
+                            .font(.caption2)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .listRowBackground(Color.clear)
+                }
             }
             .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
@@ -140,6 +169,31 @@ struct AddServerView: View {
                 }
             }
         }
+    }
+
+    /// One-tap path for Lite mode — no prompt, no signup. Creates a local
+    /// account with a single default library; the user can rename either
+    /// from Profile → Manage. We auto-attach a library because every Lite
+    /// user has exactly one (the libraries grid hides the "+" button when
+    /// the install is local-only, so manual library creation isn't a
+    /// reachable path).
+    private func createLocalAccount() {
+        let defaultName = "My Library"
+        let account = appState.addLocalAccount(displayName: defaultName)
+        // Clear the synthetic user.displayName so the Home greeting reads
+        // "Good evening" rather than "Good evening, My Library". The user
+        // sets their own name from the rename sheet.
+        appState.setLocalUserDisplayName("", for: account.id)
+        let library = PersistedLibrary(
+            serverAccountID: account.id,
+            name: defaultName,
+            libraryDescription: "",
+            isPublic: false
+        )
+        modelContext.insert(library)
+        try? modelContext.save()
+        onComplete()
+        if !isFirstTime { dismiss() }
     }
 
     private var navigationTitle: String {

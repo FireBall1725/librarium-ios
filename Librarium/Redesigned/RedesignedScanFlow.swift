@@ -1174,17 +1174,18 @@ struct RedesignedScanResultView: View {
         lookupLoading = true
         defer { lookupLoading = false }
 
-        // Lookup goes against the primary server (provider-based, so
-        // the answer is the same regardless of which server is asked);
-        // libraries + ownership fan out across every signed-in account
-        // so a multi-server user can add the scanned book to any of
-        // their libraries.
-        guard let primary = primaryAccount() else {
-            lookupError = "No primary server selected."
-            librariesError = "No primary server selected."
+        // Lookup is provider-based (Open Library / Google Books), so any
+        // remote server can answer — we prefer the preferred account when
+        // remote, otherwise fall back to the first remote we find. Local
+        // (Lite) accounts can't answer because there's no api to call;
+        // the scan flow surfaces a clear "needs a server" message below
+        // when every account is local.
+        guard let lookupAccount = lookupCapableAccount() else {
+            lookupError = "Scanning ISBNs needs a server signed in."
+            librariesError = "No servers available to add scanned books to."
             return
         }
-        let primaryClient = appState.makeClient(serverURL: primary.url)
+        let primaryClient = appState.makeClient(serverURL: lookupAccount.url)
 
         async let lookupTask = LookupService(client: primaryClient).isbn(isbn)
         async let allLibrariesTask = loadAllLibraries()
@@ -1223,7 +1224,11 @@ struct RedesignedScanResultView: View {
     /// flow can route subsequent requests (byISBN, create) to the
     /// correct server.
     private func loadAllLibraries() async -> [Library] {
-        let accounts = appState.accounts
+        // Lite accounts are skipped — they have no api endpoint to list
+        // against, and the scan flow writes books through api anyway.
+        // When local book writes land (PR2), this will gain a SwiftData
+        // path that contributes local libraries here too.
+        let accounts = appState.accounts.filter { $0.kind == .remote }
         guard !accounts.isEmpty else { return [] }
         var collected: [Library] = []
         await withTaskGroup(of: [Library].self) { group in
@@ -1349,6 +1354,17 @@ struct RedesignedScanResultView: View {
             return primary
         }
         return appState.accounts.first
+    }
+
+    /// Account to hit for ISBN lookups. Provider-based, so any remote
+    /// server gives the same answer — but the preferred account wins if
+    /// it's remote so multi-server users get consistent results.
+    private func lookupCapableAccount() -> ServerAccount? {
+        if let preferred = primaryAccount(),
+           preferred.kind == .remote, !preferred.needsReauth {
+            return preferred
+        }
+        return appState.accounts.first { $0.kind == .remote && !$0.needsReauth }
     }
 }
 

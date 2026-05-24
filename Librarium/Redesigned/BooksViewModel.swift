@@ -149,9 +149,8 @@ final class BooksViewModel {
         return false
     }
 
-    func loadFromCache(offlineKey: String) {
-        if let cached = LibraryOfflineStore.shared.cachedBooks(for: offlineKey) {
-            books = cached; total = cached.count
-        }
-    }
+    /// Legacy helper kept as a no-op stub. The SwiftData-backed offline
+    /// path in RedesignedBooksView populates `books` / `total` directly
+    /// now — call sites that used this should be removed when convenient.
+    func loadFromCache(offlineKey: String) { /* moved to RedesignedBooksView.loadBooks */ }
 }

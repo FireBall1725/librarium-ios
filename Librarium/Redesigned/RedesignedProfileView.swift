@@ -6,7 +6,7 @@ import SwiftUI
 /// Redesigned Profile — mockup card #8.
 ///
 /// Profile head (avatar + name + admin badge) → reading stats strip →
-/// Servers list (status + per-server library count, tap to switch primary,
+/// Servers list (status + per-server library count, tap to switch preferred,
 /// "Add a server" row at the bottom) → App section (legacy account
 /// management for advanced changes, sign out, version row).
 ///
@@ -44,21 +44,27 @@ struct RedesignedProfileView: View {
         .task { await vm.load(appState: appState) }
         .refreshable { await vm.load(appState: appState) }
         .sheet(isPresented: $showAddServer) {
-            NavigationStack {
-                AddServerView(isFirstTime: false) {
-                    Task { await vm.load(appState: appState) }
-                }
-            }
+            AddAccountFlow(onComplete: {
+                showAddServer = false
+                Task { await vm.load(appState: appState) }
+            })
+            .environment(appState)
+            .presentationDragIndicator(.visible)
         }
         .sheet(item: $manageAccount) { account in
             NavigationStack {
-                ProfileView(account: account)
+                if account.kind == .local {
+                    LiteAccountSettingsView(account: account)
+                } else {
+                    ProfileView(account: account)
+                }
             }
         }
         .sheet(isPresented: $showTelemetrySettings) {
             NavigationStack {
                 TelemetrySettingsView()
             }
+            .presentationDragIndicator(.visible)
         }
         .confirmationDialog(
             "Remove server?",
@@ -241,7 +247,7 @@ struct RedesignedProfileView: View {
                             .foregroundStyle(Theme.Colors.appText)
                             .lineLimit(1)
                         if isPrimary {
-                            Text("PRIMARY")
+                            Text("PREFERRED")
                                 .font(.system(size: 9, weight: .bold))
                                 .tracking(0.6)
                                 .foregroundStyle(Theme.Colors.accentStrong)
@@ -268,10 +274,29 @@ struct RedesignedProfileView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button("Manage") { manageAccount = account }
-                .tint(Theme.Colors.accent)
-            Button("Remove", role: .destructive) { confirmRemove = account }
+        // The server list is a VStack, not a List, so `.swipeActions`
+        // is silently dead here. Use a long-press context menu instead
+        // so the affordance is discoverable, and put Manage/Remove
+        // behind it explicitly.
+        .contextMenu {
+            if !isPrimary {
+                Button {
+                    appState.setPrimaryAccount(id: account.id)
+                    Task { await vm.load(appState: appState) }
+                } label: {
+                    Label("Make preferred", systemImage: "star.fill")
+                }
+            }
+            Button {
+                manageAccount = account
+            } label: {
+                Label("Manage", systemImage: "gear")
+            }
+            Button(role: .destructive) {
+                confirmRemove = account
+            } label: {
+                Label("Remove", systemImage: "trash")
+            }
         }
     }
 

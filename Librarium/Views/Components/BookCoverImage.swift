@@ -78,6 +78,24 @@ struct BookCoverImage: View {
         image = nil
         didFail = false
         guard let url else { return }
+
+        // Try the on-disk cache first so a cold launch with no network
+        // still shows the cover. Online, this also makes scrolling feel
+        // instant on repeat visits — we still refresh from the network
+        // below so a re-uploaded cover eventually wins out.
+        if let cached = CoverCache.shared.cached(for: url),
+           let loaded = UIImage(data: cached) {
+            image = loaded
+        }
+
+        // Skip the network round-trip entirely when there's no path —
+        // otherwise scrolling a 100-book grid offline kicks off 100
+        // requests that each wait for their 5-second URLSession timeout.
+        guard NetworkMonitor.shared.isOnline else {
+            if image == nil { didFail = true }
+            return
+        }
+
         var req = URLRequest(url: url)
         if let token {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -86,10 +104,13 @@ struct BookCoverImage: View {
               let http = response as? HTTPURLResponse,
               http.statusCode == 200,
               let loaded = UIImage(data: data) else {
-            didFail = true
+            // Network failed. If we already painted from cache the user
+            // is happy; only set the failure flag when nothing is showing.
+            if image == nil { didFail = true }
             return
         }
         image = loaded
+        CoverCache.shared.save(data, for: url)
     }
 
     private var placeholder: some View {

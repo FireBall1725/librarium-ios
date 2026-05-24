@@ -30,12 +30,6 @@ struct RedesignedAppShell: View {
     @State private var selectedTab: AppTab = .home
     @State private var selectedLibrary: Library?
     @State private var showScan = false
-    /// Detail views advertise the tab they "belong to" via
-    /// `LogicalTabPreferenceKey` so the floating bar can highlight that
-    /// tab while the actual NavigationStack stays on the originating
-    /// tab. Lets back-button return to where the user came from while
-    /// the bar still reflects what they're viewing.
-    @State private var logicalTabOverride: AppTab?
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -78,13 +72,10 @@ struct RedesignedAppShell: View {
             // against the mockup is tracked in `plans/ios-redesign/PLAN.md`.
             EditorialTabBar(
                 selected: $selectedTab,
-                highlight: logicalTabOverride ?? selectedTab,
+                highlight: selectedTab,
                 onScan: { showScan = true }
             )
             .padding(.bottom, 4)
-        }
-        .onPreferenceChange(LogicalTabPreferenceKey.self) { value in
-            logicalTabOverride = value
         }
         .fullScreenCover(isPresented: $showScan) {
             RedesignedScanFlow {

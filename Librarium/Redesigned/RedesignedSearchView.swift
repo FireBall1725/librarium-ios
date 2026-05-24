@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// Redesigned Search — mockup card #10.
@@ -15,12 +16,14 @@ import SwiftUI
 /// redesigned profile (mockup card 8) will own the server switcher.
 struct RedesignedSearchView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
 
     @State private var vm = RedesignedSearchViewModel()
     @State private var searchTask: Task<Void, Never>?
     @State private var pendingDetail: BookDetailRequest?
     @State private var loadedDetail: BookDetailLoaded?
     @State private var selectedSeries: SeriesSearchResult?
+    @State private var reauthAccount: ServerAccount?
 
     var body: some View {
         NavigationStack {
@@ -30,6 +33,10 @@ struct RedesignedSearchView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
                         header
+                        ReauthBannerStack(
+                            accounts: appState.accounts.filter { $0.needsReauth },
+                            onTap: { reauthAccount = $0 }
+                        )
                         searchPill
                         if vm.hasQuery {
                             segments
@@ -49,14 +56,18 @@ struct RedesignedSearchView: View {
             .navigationDestination(item: $selectedSeries) { result in
                 RedesignedSeriesDetailView(library: result.library, series: result.series)
             }
+            .sheet(item: $reauthAccount) { account in
+                ReauthSheet(account: account)
+            }
         }
         .onChange(of: vm.query) { _, _ in
             searchTask?.cancel()
             let q = vm.query
+            let container = modelContext.container
             searchTask = Task {
                 try? await Task.sleep(for: .milliseconds(350))
                 guard !Task.isCancelled else { return }
-                await vm.search(query: q, appState: appState)
+                await vm.search(query: q, appState: appState, modelContainer: container)
             }
         }
         .onChange(of: pendingDetail) { _, request in
@@ -182,10 +193,16 @@ struct RedesignedSearchView: View {
                     ForEach(vm.bookResults) { result in
                         searchRow(bookResult: result)
                             .onTapGesture {
-                                pendingDetail = BookDetailRequest(
-                                    libraryId: result.library.id,
-                                    libraryName: result.library.name,
-                                    bookId: result.book.id
+                                // Navigate immediately with the cached
+                                // book + library — both came from either
+                                // the api or SwiftData and are already
+                                // complete enough for the detail view.
+                                // No prefetch round-trip means no
+                                // URLSession timeout on offline / down-
+                                // server cases.
+                                loadedDetail = BookDetailLoaded(
+                                    library: result.library,
+                                    book: result.book
                                 )
                             }
                     }
@@ -222,8 +239,17 @@ struct RedesignedSearchView: View {
             ),
             title: result.book.title,
             subtitle: bookSubtitle(for: result, author: primaryAuthor),
+            serverName: showServerLabels ? result.library.serverName : nil,
             badge: bookBadge(for: result.book)
         )
+    }
+
+    /// True when the user has more than one account on this device — only
+    /// then is the per-row server label informative. A single-server user
+    /// already knows where every result came from, so we keep the row
+    /// clean for the common case.
+    private var showServerLabels: Bool {
+        appState.accounts.count > 1
     }
 
     @ViewBuilder
@@ -240,6 +266,7 @@ struct RedesignedSearchView: View {
             ),
             title: "\(result.series.name) (series)",
             subtitle: seriesSubtitle(for: result.series),
+            serverName: showServerLabels ? result.library.serverName : nil,
             badge: ("Series", Theme.Colors.appText2, Color.white.opacity(0.06))
         )
     }
@@ -263,6 +290,7 @@ struct RedesignedSearchView: View {
             ),
             title: contributor.name,
             subtitle: "Author",
+            serverName: nil,
             badge: ("Author", Theme.Colors.appText2, Color.white.opacity(0.06))
         )
     }
@@ -272,6 +300,7 @@ struct RedesignedSearchView: View {
         thumb: AnyView,
         title: String,
         subtitle: String,
+        serverName: String?,
         badge: (text: String, fg: Color, bg: Color)?
     ) -> some View {
         VStack(spacing: 0) {
@@ -286,6 +315,15 @@ struct RedesignedSearchView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Theme.Colors.appText3)
                         .lineLimit(1)
+                    if let serverName, !serverName.isEmpty {
+                        Text(serverName)
+                            .font(Theme.Fonts.label(9))
+                            .tracking(1.2)
+                            .textCase(.uppercase)
+                            .foregroundStyle(Theme.Colors.appText3)
+                            .lineLimit(1)
+                            .padding(.top, 1)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if let badge {
@@ -377,17 +415,64 @@ struct RedesignedSearchView: View {
 
     private func loadDetail(request: BookDetailRequest) async {
         defer { pendingDetail = nil }
-        guard let account = primaryAccount() else { return }
+        let resolvedURL = request.serverURL.isEmpty ? primaryAccount()?.url : request.serverURL
+        guard let url = resolvedURL,
+              let account = appState.accounts.first(where: { $0.url == url }) else { return }
+
+        // Short-circuit straight to cache when there's no network OR
+        // this server failed an api call within the last minute. The
+        // latter is the crucial fix for nav-and-back-and-nav-again: one
+        // 10-second timeout teaches us the server is unreachable, and
+        // subsequent book taps skip straight to the cache.
+        if NetworkMonitor.shared.shouldSkipAPI(for: account.url) {
+            await loadDetailFromCache(account: account, request: request)
+            return
+        }
+
         let client = appState.makeClient(serverURL: account.url)
         do {
             let book: Book = try await BookService(client: client).get(libraryId: request.libraryId, bookId: request.bookId)
             var lib = try await LibraryService(client: client).get(request.libraryId)
             lib.serverURL = account.url
             lib.serverName = account.name
+            NetworkMonitor.shared.markServerReachable(account.url)
             loadedDetail = BookDetailLoaded(library: lib, book: book)
         } catch {
-            // Silently ignore — search row taps shouldn't block on errors.
+            NetworkMonitor.shared.markServerUnreachable(account.url)
+            await loadDetailFromCache(account: account, request: request)
         }
+    }
+
+    /// Build a BookDetailLoaded from the on-device caches alone.
+    /// Reachable from two paths: the `isOffline` short-circuit at the
+    /// top of `loadDetail` and the api-failure catch. Detail view's
+    /// `try?` fan-out for editions/shelves degrades to empty arrays
+    /// automatically so the user gets title / cover / description.
+    private func loadDetailFromCache(account: ServerAccount, request: BookDetailRequest) async {
+        let cache = BookCache(modelContainer: modelContext.container)
+        guard let cachedBook = cache.book(
+            serverURL: account.url,
+            libraryId: request.libraryId,
+            bookId: request.bookId
+        ) else { return }
+        var lib = LibraryOfflineStore.shared.cachedLibraries()
+            .first(where: { $0.id == request.libraryId && $0.serverURL == account.url })
+            ?? Library(
+                id: request.libraryId,
+                name: request.libraryName,
+                description: "",
+                slug: "",
+                ownerId: "",
+                isPublic: false,
+                createdAt: "",
+                updatedAt: "",
+                bookCount: nil,
+                readingCount: nil,
+                readCount: nil
+            )
+        lib.serverURL = account.url
+        lib.serverName = account.name
+        loadedDetail = BookDetailLoaded(library: lib, book: cachedBook)
     }
 
     private func primaryAccount() -> ServerAccount? {
@@ -405,15 +490,22 @@ struct BookSearchResult: Identifiable, Hashable {
     let book: Book
     let library: Library
 
-    var id: String { "\(library.id)|\(book.id)" }
+    // Include the source server in the identity. Cloned-DB setups (the
+    // same library/book UUIDs on two servers) would otherwise collapse
+    // into one ForEach row, picking whichever server's stamp lost the
+    // race — visible to the user as "the server label is wrong".
+    var id: String { "\(library.serverURL)|\(library.id)|\(book.id)" }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.book.id == rhs.book.id && lhs.library.id == rhs.library.id
+        lhs.book.id == rhs.book.id
+            && lhs.library.id == rhs.library.id
+            && lhs.library.serverURL == rhs.library.serverURL
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(book.id)
         hasher.combine(library.id)
+        hasher.combine(library.serverURL)
     }
 }
 
@@ -421,20 +513,31 @@ struct SeriesSearchResult: Identifiable, Hashable {
     let series: Series
     let library: Library
 
-    var id: String { "\(library.id)|\(series.id)" }
+    var id: String { "\(library.serverURL)|\(library.id)|\(series.id)" }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.series.id == rhs.series.id && lhs.library.id == rhs.library.id
+        lhs.series.id == rhs.series.id
+            && lhs.library.id == rhs.library.id
+            && lhs.library.serverURL == rhs.library.serverURL
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(series.id)
         hasher.combine(library.id)
+        hasher.combine(library.serverURL)
     }
 }
 
 enum SearchSegment: Hashable {
     case all, books, series, authors
+}
+
+/// One server's slice of a cross-server search. Aggregated by the
+/// VM into the merged results arrays.
+private struct PerAccountSearch {
+    let books: [BookSearchResult]
+    let series: [SeriesSearchResult]
+    let contributors: [ContributorResult]
 }
 
 // MARK: - View model
@@ -451,10 +554,17 @@ final class RedesignedSearchViewModel {
     var isLoading = false
     var stubAlert: String?
 
-    /// Runs against the primary account. Cross-type fan-out: each library
-    /// contributes books + series; contributors come from the server-wide
-    /// endpoint so they're per-server (not per-library).
-    func search(query: String, appState: AppState) async {
+    /// Runs against every remote account in parallel. Each account
+    /// contributes its own books / series / contributors slice; we merge
+    /// the slices and let the per-result library carry server context
+    /// downstream (cover URLs, detail nav, mutations).
+    ///
+    /// When an account's api fan-out fails (server unreachable, network
+    /// down) we fall back to searching the SwiftData book cache for any
+    /// of that account's kept-offline libraries. Books-only — series and
+    /// contributors are server-derived and don't have an offline path
+    /// yet, so they just stay empty offline.
+    func search(query: String, appState: AppState, modelContainer: ModelContainer) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             bookResults = []
@@ -463,34 +573,108 @@ final class RedesignedSearchViewModel {
             return
         }
 
-        guard let account = Self.primaryAccount(appState: appState) else { return }
-        let client = appState.makeClient(serverURL: account.url)
+        let allRemote = appState.accounts.filter { $0.kind == .remote }
+        guard !allRemote.isEmpty else {
+            bookResults = []
+            seriesResults = []
+            contributorResults = []
+            return
+        }
 
         isLoading = true
         defer { isLoading = false }
 
-        // Fetch the user's libraries on this server so we know what to
-        // fan out across. Cached results aren't re-fetched here yet —
-        // search hits live every keystroke.
-        let libraries: [Library]
-        do {
-            var libs = try await LibraryService(client: client).list()
-            for i in libs.indices {
-                libs[i].serverURL = account.url
-                libs[i].serverName = account.name
+        // Offline / unreachable-server path runs FIRST and ignores
+        // `needsReauth`: cached search hits should surface regardless
+        // of auth state, since the user can't sign back in offline.
+        let offline = allRemote.allSatisfy { NetworkMonitor.shared.shouldSkipAPI(for: $0.url) }
+        if offline {
+            var offlineBooks: [BookSearchResult] = []
+            var offlineSeries: [SeriesSearchResult] = []
+            for account in allRemote {
+                let books = await Self.offlineBookSearch(
+                    serverURL: account.url,
+                    serverName: account.name,
+                    query: trimmed,
+                    modelContainer: modelContainer
+                )
+                offlineBooks.append(contentsOf: books)
+                let series = Self.offlineSeriesSearch(
+                    serverURL: account.url,
+                    serverName: account.name,
+                    query: trimmed,
+                    modelContainer: modelContainer
+                )
+                offlineSeries.append(contentsOf: series)
             }
-            libraries = libs
-        } catch {
+            bookResults = offlineBooks.sorted {
+                $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending
+            }
+            seriesResults = offlineSeries.sorted {
+                $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending
+            }
+            contributorResults = []
             return
         }
 
-        async let books = Self.fanOutBooks(client: client, libraries: libraries, query: trimmed)
-        async let series = Self.fanOutSeries(client: client, libraries: libraries, query: trimmed)
-        async let contributors = Self.searchContributors(client: client, query: trimmed)
+        let remotes = allRemote.filter { !$0.needsReauth }
+        guard !remotes.isEmpty else {
+            bookResults = []
+            seriesResults = []
+            contributorResults = []
+            return
+        }
 
-        if let value = try? await books { bookResults = value }
-        if let value = try? await series { seriesResults = value }
-        if let value = try? await contributors { contributorResults = value }
+        var allBooks: [BookSearchResult] = []
+        var allSeries: [SeriesSearchResult] = []
+        var allContribs: [ContributorResult] = []
+
+        await withTaskGroup(of: PerAccountSearch.self) { group in
+            for account in remotes {
+                let url = account.url
+                let name = account.name
+                group.addTask {
+                    let client = await appState.makeClient(serverURL: url)
+                    let libraries: [Library]
+                    do {
+                        var libs = try await LibraryService(client: client).list()
+                        for i in libs.indices {
+                            libs[i].serverURL = url
+                            libs[i].serverName = name
+                        }
+                        libraries = libs
+                    } catch {
+                        // Account is unreachable. Search whatever we
+                        // cached for it locally — kept-offline libraries
+                        // become a usable offline index.
+                        let offlineBooks = await Self.offlineBookSearch(
+                            serverURL: url,
+                            serverName: name,
+                            query: trimmed,
+                            modelContainer: modelContainer
+                        )
+                        return PerAccountSearch(books: offlineBooks, series: [], contributors: [])
+                    }
+                    async let books = Self.fanOutBooks(client: client, libraries: libraries, query: trimmed)
+                    async let series = Self.fanOutSeries(client: client, libraries: libraries, query: trimmed)
+                    async let contribs = Self.searchContributors(client: client, query: trimmed)
+                    return PerAccountSearch(
+                        books: (try? await books) ?? [],
+                        series: (try? await series) ?? [],
+                        contributors: (try? await contribs) ?? []
+                    )
+                }
+            }
+            for await chunk in group {
+                allBooks.append(contentsOf: chunk.books)
+                allSeries.append(contentsOf: chunk.series)
+                allContribs.append(contentsOf: chunk.contributors)
+            }
+        }
+
+        bookResults = allBooks.sorted { $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending }
+        seriesResults = allSeries.sorted { $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending }
+        contributorResults = allContribs
     }
 
     private static func fanOutBooks(client: APIClient, libraries: [Library], query: String) async throws -> [BookSearchResult] {
@@ -516,6 +700,94 @@ final class RedesignedSearchViewModel {
             }
         }
         return out.sorted { $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending }
+    }
+
+    /// Offline books-only search for one server's cached rows. Walks
+    /// PersistedBook directly via `serverAccountID` so a missing
+    /// `LibraryOfflineStore` metadata entry (e.g. user hadn't visited
+    /// the libraries grid online recently) doesn't silently zero-out
+    /// the result set. Each match is stamped with whatever cached
+    /// library metadata we have; if none, we fabricate a minimal
+    /// `Library` so the detail nav still has serverURL + libraryId.
+    private static func offlineBookSearch(
+        serverURL: String,
+        serverName: String,
+        query: String,
+        modelContainer: ModelContainer
+    ) async -> [BookSearchResult] {
+        let cache = BookCache(modelContainer: modelContainer)
+        let books = cache.searchAllBooks(serverURL: serverURL, query: query)
+        guard !books.isEmpty else { return [] }
+
+        let store = LibraryOfflineStore.shared
+        let libsByID: [String: Library] = Dictionary(
+            uniqueKeysWithValues: store.cachedLibraries()
+                .filter { $0.serverURL == serverURL }
+                .map { ($0.id, $0) }
+        )
+
+        return books.map { book in
+            var lib = libsByID[book.libraryId] ?? Library(
+                id: book.libraryId,
+                name: "Library",
+                description: "",
+                slug: "",
+                ownerId: "",
+                isPublic: false,
+                createdAt: "",
+                updatedAt: "",
+                bookCount: nil,
+                readingCount: nil,
+                readCount: nil
+            )
+            lib.serverURL = serverURL
+            lib.serverName = serverName
+            return BookSearchResult(book: book, library: lib)
+        }
+    }
+
+    /// Offline series search — case-insensitive contains on the series
+    /// name against SwiftData. Each hit gets stamped with whatever
+    /// cached library metadata exists for it; fallback minimal Library
+    /// when none. Series matching is local-only — the api search rolls
+    /// up books + series + contributors in one shot online; offline we
+    /// just match name.
+    private static func offlineSeriesSearch(
+        serverURL: String,
+        serverName: String,
+        query: String,
+        modelContainer: ModelContainer
+    ) -> [SeriesSearchResult] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        let cache = SeriesCache(modelContainer: modelContainer)
+        let store = LibraryOfflineStore.shared
+        let libsByID = Dictionary(
+            uniqueKeysWithValues: store.cachedLibraries()
+                .filter { $0.serverURL == serverURL }
+                .map { ($0.id, $0) }
+        )
+        let allSeries = cache.seriesByServer(serverURL: serverURL)
+        return allSeries
+            .filter { $0.name.lowercased().contains(needle) }
+            .map { series in
+                var lib = libsByID[series.libraryId] ?? Library(
+                    id: series.libraryId,
+                    name: "Library",
+                    description: "",
+                    slug: "",
+                    ownerId: "",
+                    isPublic: false,
+                    createdAt: "",
+                    updatedAt: "",
+                    bookCount: nil,
+                    readingCount: nil,
+                    readCount: nil
+                )
+                lib.serverURL = serverURL
+                lib.serverName = serverName
+                return SeriesSearchResult(series: series, library: lib)
+            }
     }
 
     private static func fanOutSeries(client: APIClient, libraries: [Library], query: String) async throws -> [SeriesSearchResult] {

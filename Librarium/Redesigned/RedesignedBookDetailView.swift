@@ -1114,14 +1114,39 @@ struct RedesignedBookDetailView: View {
     // MARK: - Loading
 
     private func loadDetail() async {
-        let client = appState.makeClient(serverURL: library.serverURL)
-        async let e  = BookService(client: client).editions(libraryId: library.id, bookId: currentBook.id)
-        async let s  = BookService(client: client).shelves(libraryId: library.id, bookId: currentBook.id)
-        async let sr = BookService(client: client).seriesRefs(libraryId: library.id, bookId: currentBook.id)
+        let editionCache = EditionCache(modelContainer: modelContext.container)
+        let shelfCache = ShelfCache(modelContainer: modelContext.container)
 
-        editions   = (try? await e) ?? []
-        shelves    = (try? await s) ?? []
-        seriesRefs = (try? await sr) ?? []
+        // Offline / unreachable-server: pull straight from cache. The
+        // unified LibrarySync writes these on every kept-offline pass
+        // so a fresh online sync populates editions + shelves for
+        // every book in the library.
+        if NetworkMonitor.shared.shouldSkipAPI(for: library.serverURL) {
+            editions = editionCache.editions(for: library, bookId: currentBook.id)
+            shelves = shelfCache.shelves(for: library, bookId: currentBook.id)
+            seriesRefs = []
+        } else {
+            let client = appState.makeClient(serverURL: library.serverURL)
+            async let e  = BookService(client: client).editions(libraryId: library.id, bookId: currentBook.id)
+            async let s  = BookService(client: client).shelves(libraryId: library.id, bookId: currentBook.id)
+            async let sr = BookService(client: client).seriesRefs(libraryId: library.id, bookId: currentBook.id)
+
+            editions = (try? await e) ?? editionCache.editions(for: library, bookId: currentBook.id)
+            shelves = (try? await s) ?? shelfCache.shelves(for: library, bookId: currentBook.id)
+            seriesRefs = (try? await sr) ?? []
+
+            // Write through to cache so the next offline visit (or the
+            // next unreachable-server tap) has fresh data without
+            // requiring a full LibrarySync.
+            if let account = appState.accounts.first(where: { $0.url == library.serverURL }) {
+                if !editions.isEmpty {
+                    editionCache.upsert(editions, for: library, bookId: currentBook.id, serverAccountID: account.id)
+                }
+                if !shelves.isEmpty {
+                    shelfCache.upsert(shelves, for: library, bookId: currentBook.id, serverAccountID: account.id)
+                }
+            }
+        }
 
         // Default the picker to the primary edition (or first available).
         // The interaction we load for the hero / favourite toggle / status
@@ -1146,8 +1171,17 @@ struct RedesignedBookDetailView: View {
                 persisted = (try? modelContext.fetch(descriptor))?.first
             }
 
-            let fetched = try? await BookService(client: client)
-                .interaction(libraryId: library.id, bookId: currentBook.id, editionId: pe.id)
+            // Online interaction refresh — skip when there's no api
+            // path; the PersistedInteraction read above already gave
+            // the UI its last-known-good state.
+            let fetched: UserBookInteraction?
+            if NetworkMonitor.shared.shouldSkipAPI(for: library.serverURL) {
+                fetched = nil
+            } else {
+                let client = appState.makeClient(serverURL: library.serverURL)
+                fetched = try? await BookService(client: client)
+                    .interaction(libraryId: library.id, bookId: currentBook.id, editionId: pe.id)
+            }
             interaction = fetched
 
             // Backfill into SwiftData. The helper guards against
@@ -1175,6 +1209,13 @@ struct RedesignedBookDetailView: View {
     }
 
     private func loadActiveLoan() async {
+        // Loans are transient state we don't cache. When offline / unreachable,
+        // skip the call and leave `activeLoan` nil — the detail view's "Lent"
+        // badge just won't show, which matches the "no fresh data" expectation.
+        guard !NetworkMonitor.shared.shouldSkipAPI(for: library.serverURL) else {
+            activeLoan = nil
+            return
+        }
         let client = appState.makeClient(serverURL: library.serverURL)
         let loans = (try? await LoanService(client: client).list(libraryId: library.id)) ?? []
         activeLoan = loans.first(where: { $0.bookId == currentBook.id && $0.isActive })

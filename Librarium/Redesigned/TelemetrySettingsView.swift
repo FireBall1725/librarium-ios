@@ -3,77 +3,153 @@
 
 import SwiftUI
 
-/// Detail view reachable from Profile → Telemetry. Shows the current
-/// opt-in state, lets the user flip it, and surfaces the local log of
-/// recent signals (with the full payload of each, tappable) so they
-/// can verify what we send is what we promised.
+/// Detail view reachable from Profile → Telemetry. Reuses the same hero
+/// + "what gets / never gets sent" block as the first-launch opt-in
+/// sheet so the user sees the identical promises in both contexts.
+/// Pairs the bullets with a prominent toggle card showing the current
+/// opt-in state and a recent-signals log so the user can verify what
+/// we send is what we promised.
 struct TelemetrySettingsView: View {
     @Bindable var telemetry: TelemetryService = TelemetryService.shared
     @State private var confirmClear = false
 
     var body: some View {
-        List {
-            Section {
-                Toggle(isOn: optInBinding) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Send anonymous usage data")
-                            .font(.system(size: 15, weight: .medium))
-                        Text("Helps us see which features are actually used.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.Colors.appText3)
-                    }
+        ZStack {
+            Theme.Colors.appBackground.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    TelemetryFactsView(showHero: true)
+                    toggleCard
+                    recentSignalsCard
+                }
+                .padding(.horizontal, 22)
+                .padding(.top, 36)
+                .padding(.bottom, 40)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .confirmationDialog("Clear local telemetry log?", isPresented: $confirmClear, titleVisibility: .visible) {
+            Button("Clear", role: .destructive) { telemetry.clearLog() }
+            Button("Cancel", role: .cancel) { }
+        }
+    }
+
+    // MARK: - Toggle card
+
+    @ViewBuilder
+    private var toggleCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle(isOn: optInBinding) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Send anonymous usage data")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText)
+                    Text(telemetry.optedIn
+                         ? "On — signals are being queued and sent."
+                         : "Off — nothing is being sent.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.Colors.appText3)
                 }
             }
+            .tint(Theme.Colors.accent)
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Theme.Colors.appLine, lineWidth: 0.5)
+        )
+    }
 
-            Section("What we send") {
-                bullet("Names of features you tap")
-                bullet("App version and device class")
-                bullet("An anonymous install id")
-                bullet("A short session id")
+    // MARK: - Recent signals
+
+    @ViewBuilder
+    private var recentSignalsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Recent signals")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.appText)
+                Spacer()
+                Text("\(telemetry.recentSignals.count)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.Colors.appText3)
+                    .monospacedDigit()
             }
 
-            Section("What we never send") {
-                bullet("Book titles, ISBNs, authors")
-                bullet("Ratings, reviews, notes, reading progress")
-                bullet("Library or member names")
-                bullet("Search queries, anything you type")
-            }
-
-            Section {
-                if telemetry.recentSignals.isEmpty {
-                    Text(telemetry.optedIn
-                         ? "No signals queued yet on this device."
-                         : "Telemetry is off, so nothing's been queued.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.Colors.appText3)
-                } else {
-                    ForEach(telemetry.recentSignals) { signal in
+            if telemetry.recentSignals.isEmpty {
+                Text(telemetry.optedIn
+                     ? "No signals queued yet on this device."
+                     : "Telemetry is off, so nothing's been queued.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.Colors.appText3)
+                    .padding(.vertical, 4)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(telemetry.recentSignals.enumerated()), id: \.element.id) { index, signal in
                         NavigationLink {
                             TelemetrySignalDetailView(signal: signal)
                         } label: {
                             signalRow(signal)
                         }
-                    }
-                    Button(role: .destructive) {
-                        confirmClear = true
-                    } label: {
-                        Text("Clear local log")
+                        .buttonStyle(.plain)
+                        if index < telemetry.recentSignals.count - 1 {
+                            Divider().background(Theme.Colors.appLine)
+                        }
                     }
                 }
-            } header: {
-                Text("Recent signals (last \(telemetry.recentSignals.count))")
-            } footer: {
-                Text("This log is on this device only. Clearing it does not affect signals already delivered.")
+                Button(role: .destructive) {
+                    confirmClear = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Clear local log", systemImage: "trash")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Theme.Colors.bad)
+                        Spacer()
+                    }
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text("This log lives on this device only. Clearing it does not affect signals already delivered.")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.Colors.appText3)
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Theme.Colors.appLine, lineWidth: 0.5)
+        )
+    }
+
+    @ViewBuilder
+    private func signalRow(_ signal: TelemetrySignal) -> some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(signal.name)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.Colors.appText)
+                Text(signal.createdAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.Colors.appText3)
             }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText3)
         }
-        .navigationTitle("Telemetry")
-        .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog("Clear local telemetry log?", isPresented: $confirmClear, titleVisibility: .visible) {
-            Button("Clear", role: .destructive) { telemetry.clearLog() }
-            Button("Cancel", role: .cancel) { }
-        }
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
     }
 
     private var optInBinding: Binding<Bool> {
@@ -81,25 +157,6 @@ struct TelemetrySettingsView: View {
             get: { telemetry.optedIn },
             set: { telemetry.setOptIn($0) }
         )
-    }
-
-    @ViewBuilder
-    private func signalRow(_ signal: TelemetrySignal) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(signal.name)
-                .font(.system(size: 14, weight: .medium))
-            Text(signal.createdAt.formatted(date: .abbreviated, time: .shortened))
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.Colors.appText3)
-        }
-    }
-
-    @ViewBuilder
-    private func bullet(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text("•").foregroundStyle(Theme.Colors.appText3)
-            Text(text).font(.system(size: 13))
-        }
     }
 }
 
@@ -109,27 +166,71 @@ struct TelemetrySignalDetailView: View {
     let signal: TelemetrySignal
 
     var body: some View {
-        List {
-            Section {
-                row("Type", signal.name)
-                row("Queued at", signal.createdAt.formatted(date: .abbreviated, time: .standard))
-                row("Recorded", "Handed to TelemetryDeck SDK")
-            }
-            if !signal.payload.isEmpty {
-                Section("Payload") {
-                    ForEach(signal.payload.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
-                        row(key, value)
-                    }
+        ZStack {
+            Theme.Colors.appBackground.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    metaCard
+                    if !signal.payload.isEmpty { payloadCard }
+                    Text("This view shows the entire signal as it sits in the local log. Identical to what the TelemetryDeck SDK is asked to send, plus an anonymous install id, session id, app version, and device class that the SDK appends automatically.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.Colors.appText3)
                 }
+                .padding(.horizontal, 22)
+                .padding(.top, 24)
+                .padding(.bottom, 40)
             }
-            Section {
-                Text("This view shows the entire signal as it sits in the local log. Identical to what the TelemetryDeck SDK is asked to send, plus an anonymous install id, session id, app version, and device class that the SDK appends automatically.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.Colors.appText3)
-            }
+            .scrollIndicators(.hidden)
         }
         .navigationTitle(signal.name)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var metaCard: some View {
+        VStack(spacing: 0) {
+            row("Type", signal.name)
+            Divider().background(Theme.Colors.appLine)
+            row("Queued at", signal.createdAt.formatted(date: .abbreviated, time: .standard))
+            Divider().background(Theme.Colors.appLine)
+            row("Recorded", "Handed to TelemetryDeck SDK")
+        }
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Theme.Colors.appLine, lineWidth: 0.5)
+        )
+    }
+
+    @ViewBuilder
+    private var payloadCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Payload")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+            ForEach(Array(signal.payload.sorted(by: { $0.key < $1.key }).enumerated()), id: \.offset) { index, item in
+                row(item.key, item.value)
+                if index < signal.payload.count - 1 {
+                    Divider().background(Theme.Colors.appLine)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Theme.Colors.appLine, lineWidth: 0.5)
+        )
     }
 
     @ViewBuilder
@@ -141,8 +242,11 @@ struct TelemetrySignalDetailView: View {
             Spacer()
             Text(value)
                 .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.Colors.appText)
                 .multilineTextAlignment(.trailing)
                 .textSelection(.enabled)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 }
