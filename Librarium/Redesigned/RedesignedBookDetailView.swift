@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// Redesigned book detail — mockup card #4.
@@ -19,6 +20,7 @@ struct RedesignedBookDetailView: View {
     let book: Book
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
 
     @State private var currentBook: Book
     @State private var editions: [BookEdition] = []
@@ -212,25 +214,60 @@ struct RedesignedBookDetailView: View {
     }
 
     /// Toggle the favorite flag on the primary edition's interaction.
-    /// The api requires the full UpdateInteractionRequest body (no PATCH
-    /// semantics yet), so we round-trip every field. UserBookInteraction
-    /// has no memberwise init so we can't optimistically construct a
-    /// flipped local copy — accept the network round-trip latency.
+    ///
+    /// First write-path to land on the outbox-first model: instead of
+    /// blocking on a direct PUT, the flip is applied to the local UI
+    /// immediately, queued as a `PendingSyncOp`, and pushed via
+    /// `POST /sync/apply` in the background. The next /sync/changes
+    /// drain confirms the canonical server state.
+    ///
+    /// Behaviour under offline: the optimistic flip stays in the UI for
+    /// the lifetime of the view, the op stays queued in SwiftData, and
+    /// `SyncService` retries on next launch / foreground transition.
+    /// The legacy `BookService.updateInteraction` PUT path is gone for
+    /// this field; other fields still use it pending their own rewires.
     private func toggleFavorite() async {
-        guard let edition = primaryEdition, let i = interaction else { return }
-        let body = UpdateInteractionRequest(
-            readStatus: i.readStatus, rating: i.rating,
-            notes: i.notes, review: i.review,
-            dateStarted: i.dateStarted, dateFinished: i.dateFinished,
-            isFavorite: !i.isFavorite
+        guard let i = interaction else { return }
+        let newFavorite = !i.isFavorite
+        let now = Date()
+        let nowString = SyncTimestampFormatter.shared.string(from: now)
+
+        // Optimistic UI: apply locally so the user sees instant feedback.
+        interaction = i.with(isFavorite: newFavorite, updatedAt: nowString)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+
+        // Resolve the account by the library's server URL so multi-server
+        // setups push the op to the right backend.
+        guard let entityID = UUID(uuidString: i.id),
+              let account = appState.accounts.first(where: { $0.url == library.serverURL })
+        else { return }
+
+        let op = PendingSyncOp.isFavorite(
+            serverAccountID: account.id,
+            entityID: entityID,
+            value: newFavorite,
+            updatedAt: now
         )
-        let client = appState.makeClient(serverURL: library.serverURL)
+        modelContext.insert(op)
         do {
-            interaction = try await BookService(client: client)
-                .updateInteraction(libraryId: library.id, bookId: currentBook.id, editionId: edition.id, body: body)
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            try modelContext.save()
         } catch {
-            // No-op — the UI is unchanged because we didn't optimistically flip.
+            #if DEBUG
+            print("📤 [toggleFavorite] failed to queue op: \(error)")
+            #endif
+            return
+        }
+
+        // Background drain. Failure is fine; the op stays queued and the
+        // next foreground sync retries.
+        let api = appState.makeClient(serverURL: library.serverURL)
+        let service = SyncService(
+            api: api,
+            serverAccountID: account.id,
+            modelContainer: modelContext.container
+        )
+        Task {
+            try? await service.drainOutbox()
         }
     }
 
