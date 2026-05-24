@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftData
 
 enum BookCacheState: Equatable {
     case notCached
@@ -44,12 +45,11 @@ final class LibraryOfflineStore {
         knownKeys = Set(UserDefaults.standard.stringArray(forKey: "offline_known_keys") ?? [])
         // Backfill: any enabled key is by definition known.
         knownKeys.formUnion(enabledKeys)
+        // Cache states are seeded lazily on first BooksView visit / first
+        // sync — keeping the init free of SwiftData lookups so this stays
+        // safe to construct off the main actor.
         for key in enabledKeys {
-            if let books = cachedBooks(for: key) {
-                bookCacheStates[key] = .cached(bookCount: books.count)
-            } else {
-                bookCacheStates[key] = .notCached
-            }
+            bookCacheStates[key] = .notCached
         }
     }
 
@@ -70,19 +70,29 @@ final class LibraryOfflineStore {
         return false
     }
 
-    func setEnabled(_ enabled: Bool, for key: String) {
+    func setEnabled(_ enabled: Bool, for key: String, modelContainer: ModelContainer? = nil) {
         guard validKey(key) else { return }
         if enabled {
             enabledKeys.insert(key)
             if bookCacheStates[key] == nil { bookCacheStates[key] = .notCached }
         } else {
-            // Turning off "Keep offline" drops the *book* cache and opt-in flag
+            // Turning off "Keep offline" drops the book cache and opt-in flag
             // only. Library metadata stays in the always-cached set so the
             // library still appears in the list when the server is unreachable.
             enabledKeys.remove(key)
-            try? fm.removeItem(at: booksFile(key))
             UserDefaults.standard.removeObject(forKey: fingerprintKey(key))
             bookCacheStates.removeValue(forKey: key)
+            // Drop the SwiftData book rows for this library too — they're
+            // dead weight without the opt-in. Caller passes the container
+            // when it has one; the libraries-grid metadata path can leave
+            // it nil since it never toggles cached state.
+            if let modelContainer {
+                let parts = key.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+                if parts.count == 2 {
+                    BookCache(modelContainer: modelContainer)
+                        .purgeLibrary(serverURL: String(parts[0]), libraryId: String(parts[1]))
+                }
+            }
         }
         UserDefaults.standard.set(Array(enabledKeys), forKey: "offline_enabled_keys")
     }
@@ -121,16 +131,17 @@ final class LibraryOfflineStore {
             .sorted { $0.name < $1.name }
     }
 
-    /// Drop every cached library (metadata, books, fingerprints, opt-in flag)
-    /// belonging to the given server URL. Called when a server is removed so
-    /// stale rows don't linger in the Libraries list after sign-out.
+    /// Drop every cached library (metadata, fingerprints, opt-in flag)
+    /// belonging to the given server URL. Called when a server is removed
+    /// so stale rows don't linger in the Libraries list after sign-out.
+    /// The SwiftData book rows live under a separate cache and are
+    /// purged via `BookCache.purge(serverURL:)`.
     func purgeLibraries(forServerURL serverURL: String) {
         let matches = knownKeys.filter {
             UserDefaults.standard.string(forKey: serverURLKey($0)) == serverURL
         }
         for key in matches {
             try? fm.removeItem(at: libraryFile(key))
-            try? fm.removeItem(at: booksFile(key))
             UserDefaults.standard.removeObject(forKey: fingerprintKey(key))
             UserDefaults.standard.removeObject(forKey: serverURLKey(key))
             UserDefaults.standard.removeObject(forKey: serverNameKey(key))
@@ -142,20 +153,19 @@ final class LibraryOfflineStore {
         UserDefaults.standard.set(Array(knownKeys), forKey: "offline_known_keys")
     }
 
-    /// Returns cached books for a library, or nil if no cache exists.
-    func cachedBooks(for key: String) -> [Book]? {
-        guard validKey(key) else { return nil }
-        guard let data = try? Data(contentsOf: booksFile(key)) else { return nil }
-        return try? JSONDecoder().decode([Book].self, from: data)
-    }
-
     /// Fetches all pages of books and caches them. Updates bookCacheStates with live progress.
     ///
     /// Short-circuits when the server-side fingerprint (count + max updated_at)
     /// matches the one persisted alongside the cache, avoiding a full re-download
     /// on every app launch. Additionally throttles fingerprint checks to once
     /// per 60 s per library so rapid navigation doesn't spam the endpoint.
-    func syncBooks(for library: Library, client: APIClient) async {
+    func syncBooks(
+        for library: Library,
+        client: APIClient,
+        serverAccountID: UUID,
+        accessToken: String?,
+        modelContainer: ModelContainer
+    ) async {
         guard !library.serverURL.isEmpty else {
             print("⚠️ [OfflineStore.syncBooks] refusing library with empty serverURL: id=\(library.id), name=\(library.name)")
             return
@@ -168,59 +178,96 @@ final class LibraryOfflineStore {
         if let last = lastFingerprintCheck[key], now.timeIntervalSince(last) < 60 { return }
         lastFingerprintCheck[key] = now
 
+        // Series sync runs unconditionally — the book fingerprint
+        // short-circuit below skips when books are unchanged, but
+        // series can change independently. We also fan out and pull
+        // each series' entries in parallel so the offline series-
+        // detail view doesn't need a prior online visit per series.
+        // Bounded by Swift's task-group concurrency; the wall-clock
+        // cost is roughly one round-trip, not N.
+        do {
+            let allSeries = try await SeriesService(client: client).list(libraryId: library.id)
+            #if DEBUG
+            print("📚 [SeriesSync] fetched \(allSeries.count) series for library \(library.name)")
+            #endif
+            let seriesCache = SeriesCache(modelContainer: modelContainer)
+            seriesCache.upsert(allSeries, for: library, serverAccountID: serverAccountID)
+
+            await withTaskGroup(of: Void.self) { group in
+                for series in allSeries {
+                    let seriesId = series.id
+                    group.addTask {
+                        let entries = (try? await SeriesService(client: client)
+                            .books(libraryId: library.id, seriesId: seriesId)) ?? []
+                        seriesCache.upsertEntries(
+                            entries,
+                            for: library,
+                            seriesId: seriesId,
+                            serverAccountID: serverAccountID
+                        )
+                    }
+                }
+            }
+            #if DEBUG
+            print("📚 [SeriesSync] entries cached for \(allSeries.count) series")
+            #endif
+        } catch {
+            #if DEBUG
+            print("⚠️ [SeriesSync] fetch failed for library \(library.name): \(error)")
+            #endif
+        }
+
+        let cache = BookCache(modelContainer: modelContainer)
+        let cachedCount = cache.bookCount(for: library)
+
         let fp: BookFingerprint
         do {
             fp = try await BookService(client: client).fingerprint(libraryId: library.id)
         } catch {
             // If fingerprint fails (e.g. older server without the endpoint) fall
             // through to a full sync only if we don't already have a cache.
-            if cachedBooks(for: key) != nil { return }
-            await fullSync(for: library, client: client, newFingerprint: nil)
+            if cachedCount > 0 { return }
+            await fullSync(for: library, client: client, serverAccountID: serverAccountID, accessToken: accessToken, cache: cache, newFingerprint: nil)
             return
         }
 
         if let stored = UserDefaults.standard.string(forKey: fingerprintKey(key)),
-           stored == fp.cacheToken,
-           cachedBooks(for: key) != nil {
+           stored == fp.cacheToken, cachedCount > 0 {
             return
         }
 
-        await fullSync(for: library, client: client, newFingerprint: fp)
+        await fullSync(for: library, client: client, serverAccountID: serverAccountID, accessToken: accessToken, cache: cache, newFingerprint: fp)
     }
 
-    private func fullSync(for library: Library, client: APIClient, newFingerprint: BookFingerprint?) async {
+    private func fullSync(
+        for library: Library,
+        client: APIClient,
+        serverAccountID: UUID,
+        accessToken: String?,
+        cache: BookCache,
+        newFingerprint: BookFingerprint?
+    ) async {
         let key = library.clientKey
         bookCacheStates[key] = .syncing(progress: 0)
-        var allBooks: [Book] = []
-        let perPage = 100
-        var page = 1
 
-        do {
-            let first = try await BookService(client: client).list(libraryId: library.id, page: page, perPage: perPage)
-            allBooks.append(contentsOf: first.items)
-            let total = max(first.total, 1)
-            bookCacheStates[key] = .syncing(progress: Double(allBooks.count) / Double(total))
-
-            while allBooks.count < first.total {
-                page += 1
-                let next = try await BookService(client: client).list(libraryId: library.id, page: page, perPage: perPage)
-                allBooks.append(contentsOf: next.items)
-                bookCacheStates[key] = .syncing(progress: Double(allBooks.count) / Double(total))
+        let cached = await cache.syncFull(
+            library: library,
+            serverAccountID: serverAccountID,
+            accessToken: accessToken,
+            client: client,
+            onProgress: { [weak self] pct in
+                self?.bookCacheStates[key] = .syncing(progress: pct)
             }
+        )
 
-            if let data = try? JSONEncoder().encode(allBooks) {
-                try? data.write(to: booksFile(key), options: .atomic)
-            }
+        if cached > 0 {
             if let fp = newFingerprint {
                 UserDefaults.standard.set(fp.cacheToken, forKey: fingerprintKey(key))
             }
-            bookCacheStates[key] = .cached(bookCount: allBooks.count)
-        } catch {
-            if let existing = cachedBooks(for: key) {
-                bookCacheStates[key] = .cached(bookCount: existing.count)
-            } else {
-                bookCacheStates[key] = .notCached
-            }
+            bookCacheStates[key] = .cached(bookCount: cached)
+        } else {
+            let existing = cache.bookCount(for: library)
+            bookCacheStates[key] = existing > 0 ? .cached(bookCount: existing) : .notCached
         }
     }
 
@@ -232,7 +279,6 @@ final class LibraryOfflineStore {
         key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? key
     }
     private func libraryFile(_ key: String) -> URL { cacheDir.appendingPathComponent("lib_\(safe(key)).json") }
-    private func booksFile(_ key: String) -> URL   { cacheDir.appendingPathComponent("books_\(safe(key)).json") }
     private func fingerprintKey(_ key: String) -> String { "offline_books_fp_\(safe(key))" }
     private func serverURLKey(_ key: String) -> String   { "offline_lib_url_\(safe(key))" }
     private func serverNameKey(_ key: String) -> String  { "offline_lib_server_\(safe(key))" }

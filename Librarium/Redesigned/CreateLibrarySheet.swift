@@ -80,11 +80,23 @@ struct CreateLibrarySheet: View {
                 lib.serverURL  = ctx.url
                 lib.serverName = ctx.name
             }
-            offlineStore.setEnabled(keepOffline, for: lib.clientKey)
-            if keepOffline {
+            offlineStore.setEnabled(keepOffline, for: lib.clientKey, modelContainer: modelContext.container)
+            if keepOffline,
+               let account = appState.accounts.first(where: { $0.url == lib.serverURL }) {
                 offlineStore.cacheLibrary(lib)
                 let client = appState.makeClient()
-                Task { await offlineStore.syncBooks(for: lib, client: client) }
+                let container = modelContext.container
+                let accountID = account.id
+                let accessToken = account.accessToken
+                Task {
+                    await offlineStore.syncBooks(
+                        for: lib,
+                        client: client,
+                        serverAccountID: accountID,
+                        accessToken: accessToken,
+                        modelContainer: container
+                    )
+                }
             }
             onCreated(lib); dismiss()
         } catch { self.error = error.localizedDescription }

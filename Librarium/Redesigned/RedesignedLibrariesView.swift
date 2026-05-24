@@ -47,6 +47,14 @@ final class RedesignedLibrariesViewModel {
             return
         }
 
+        // Airplane-mode short-circuit: no point queueing a per-account
+        // task group only to wait for every one of them to time out.
+        // Read the offline metadata + SwiftData rows directly.
+        if appState.isOffline {
+            await loadOffline(accounts: accounts, modelContainer: modelContainer)
+            return
+        }
+
         var collected: [Library] = []
         var firstError: String?
         var anySucceeded = false
@@ -130,7 +138,75 @@ final class RedesignedLibrariesViewModel {
             error = firstError
         }
 
+        // Offline fallback: every remote attempt failed (no api success),
+        // but we have library metadata cached from previous online visits.
+        // Merge those in so the grid still shows something the user can
+        // browse — kept-offline ones will work end-to-end, others will at
+        // least surface that they exist. When the fallback contributes
+        // rows, clear the error so the banner ("server is unreachable")
+        // is the only message — otherwise the bottom "request timed out"
+        // duplicates the same information in less friendly terms.
+        if hasRemote, !anySucceeded, libraries.isEmpty {
+            let cached = LibraryOfflineStore.shared
+                .cachedLibraries()
+                .filter { lib in
+                    accounts.contains(where: { $0.url == lib.serverURL })
+                }
+            if !cached.isEmpty {
+                libraries = (collected + cached).sorted {
+                    $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                error = nil
+            }
+        }
+
+        // Stamp every library we just loaded into the offline metadata
+        // store so a future cold launch with no network can still hand
+        // them back via the fallback above. Cheap — the store keys on
+        // clientKey and dedupes.
+        for lib in libraries where !lib.serverURL.hasPrefix("local://") {
+            LibraryOfflineStore.shared.cacheLibrary(lib)
+        }
+
         await loadCovers(appState: appState)
+    }
+
+    /// Pure-offline load path. Reads local library metadata from
+    /// `LibraryOfflineStore` and SwiftData-backed Lite libraries, then
+    /// stamps them with the matching account's server URL/name so the
+    /// grid renders identically to the online path. No api round-trips
+    /// — never spends a timeout when there's clearly no network.
+    private func loadOffline(accounts: [ServerAccount], modelContainer: ModelContainer) async {
+        var collected: [Library] = []
+
+        // Local (Lite) libraries — SwiftData query.
+        for account in accounts where account.kind == .local {
+            let context = ModelContext(modelContainer)
+            let accountID = account.id
+            let descriptor = FetchDescriptor<PersistedLibrary>(
+                predicate: #Predicate { $0.serverAccountID == accountID && $0.deletedAt == nil },
+                sortBy: [SortDescriptor(\.createdAt)]
+            )
+            if let rows = try? context.fetch(descriptor) {
+                collected.append(contentsOf: rows.map {
+                    $0.toLibrary(serverAccountID: accountID, accountName: account.name)
+                })
+            }
+        }
+
+        // Cached remote libraries from previous successful loads.
+        let remoteCached = LibraryOfflineStore.shared.cachedLibraries().filter { lib in
+            accounts.contains(where: { $0.url == lib.serverURL })
+        }
+        collected.append(contentsOf: remoteCached)
+
+        libraries = collected.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        unreachableServerURLs = Set(accounts
+            .filter { $0.kind == .remote }
+            .map { $0.url })
+        error = nil
     }
 
     /// Per-library `?per_page=3` fan-out for the fanned cover stack on
@@ -549,7 +625,34 @@ private struct LibraryCard: View {
             if library.isPublic {
                 pill(text: "Public", textColor: Theme.Colors.gold, bg: Color(hex: 0xf3c971, opacity: 0.15))
             }
+            if isKeptOffline {
+                offlinePill
+            }
         }
+    }
+
+    /// Small "downloaded" badge — shown when the library is kept offline,
+    /// either explicitly (Spotify-style download toggle in BooksView) or
+    /// implicitly (Lite libraries, whose data is fully local already).
+    @ViewBuilder
+    private var offlinePill: some View {
+        HStack(spacing: 4) {
+            Image(systemName: library.serverURL.hasPrefix("local://") ? "iphone.gen3" : "checkmark.icloud.fill")
+                .font(.system(size: 9, weight: .bold))
+            Text("Offline")
+                .font(Theme.Fonts.label(9))
+                .tracking(1.2)
+                .textCase(.uppercase)
+        }
+        .foregroundStyle(Theme.Colors.good)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Theme.Colors.good.opacity(0.15), in: Capsule())
+    }
+
+    private var isKeptOffline: Bool {
+        if library.serverURL.hasPrefix("local://") { return true }
+        return LibraryOfflineStore.shared.isEnabled(for: library.clientKey)
     }
 
     @ViewBuilder

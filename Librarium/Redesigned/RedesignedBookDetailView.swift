@@ -1114,6 +1114,17 @@ struct RedesignedBookDetailView: View {
     // MARK: - Loading
 
     private func loadDetail() async {
+        // No-network short-circuit: skip the entire editions/shelves/
+        // series fan-out and let those sections render empty rather than
+        // sitting through a 5-second timeout on each call. The detail
+        // view already tolerates empty arrays as a degraded view.
+        guard NetworkMonitor.shared.isOnline else {
+            editions = []
+            shelves = []
+            seriesRefs = []
+            return
+        }
+
         let client = appState.makeClient(serverURL: library.serverURL)
         async let e  = BookService(client: client).editions(libraryId: library.id, bookId: currentBook.id)
         async let s  = BookService(client: client).shelves(libraryId: library.id, bookId: currentBook.id)

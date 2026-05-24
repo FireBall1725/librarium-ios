@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// Redesigned Home — mockup card #7.
@@ -45,11 +46,21 @@ final class RedesignedHomeViewModel {
     /// have no api endpoints, so they're skipped — when their book store
     /// lands (PR2) we'll layer a SwiftData-derived contribution onto the
     /// same merged arrays.
-    func load(appState: AppState) async {
+    func load(appState: AppState, modelContainer: ModelContainer) async {
         isLoading = true
         defer { isLoading = false }
 
-        let remotes = appState.accounts.filter { $0.kind == .remote && !$0.needsReauth }
+        // Offline / unreachable-server path runs FIRST and ignores
+        // `needsReauth` — the user can't re-auth while offline, but
+        // their cached dashboard tiles should still render.
+        let allRemote = appState.accounts.filter { $0.kind == .remote }
+        let offline = !allRemote.isEmpty && allRemote.allSatisfy { NetworkMonitor.shared.shouldSkipAPI(for: $0.url) }
+        if offline {
+            await loadOffline(remotes: allRemote, modelContainer: modelContainer)
+            return
+        }
+
+        let remotes = allRemote.filter { !$0.needsReauth }
         guard !remotes.isEmpty else {
             currentlyReading = []
             recentlyFinished = []
@@ -111,6 +122,65 @@ final class RedesignedHomeViewModel {
         }
     }
 
+    /// Build the dashboard from cached PersistedBook rows. Per remote
+    /// account, pull up to 20 books in `reading` and `read` status sorted
+    /// by recency; convert each `Book` into the `DashboardBook` shape the
+    /// rest of the view consumes. Stats stay nil — they're a server-side
+    /// aggregation and we don't have the data to recompute locally.
+    private func loadOffline(remotes: [ServerAccount], modelContainer: ModelContainer) async {
+        let cache = BookCache(modelContainer: modelContainer)
+        var reading: [DashboardBook] = []
+        var finished: [DashboardBook] = []
+
+        for account in remotes {
+            let libsByID = Dictionary(
+                uniqueKeysWithValues: LibraryOfflineStore.shared.cachedLibraries()
+                    .filter { $0.serverURL == account.url }
+                    .map { ($0.id, $0.name) }
+            )
+            let readingBooks = cache.booksByReadStatus(
+                serverURL: account.url, statuses: ["reading"], limit: 20
+            )
+            let finishedBooks = cache.booksByReadStatus(
+                serverURL: account.url, statuses: ["read"], limit: 20
+            )
+            reading.append(contentsOf: readingBooks.map {
+                makeDashboardBook($0, libsByID: libsByID, account: account)
+            })
+            finished.append(contentsOf: finishedBooks.map {
+                makeDashboardBook($0, libsByID: libsByID, account: account)
+            })
+        }
+
+        currentlyReading = reading
+        recentlyFinished = finished
+        stats = nil
+        error = nil
+    }
+
+    /// Convert a cached `Book` row into the `DashboardBook` summary
+    /// shape. Author string is the primary contributor; everything else
+    /// is straight pass-through from the Book payload.
+    private func makeDashboardBook(_ book: Book, libsByID: [String: String], account: ServerAccount) -> DashboardBook {
+        let primaryAuthor = book.contributors
+            .first(where: { $0.role.caseInsensitiveCompare("author") == .orderedSame })?.name
+            ?? book.contributors.first?.name
+            ?? ""
+        let libraryName = libsByID[book.libraryId] ?? "Library"
+        return DashboardBook(
+            bookId: book.id,
+            libraryId: book.libraryId,
+            libraryName: libraryName,
+            title: book.title,
+            coverUrl: book.coverUrl,
+            authors: primaryAuthor,
+            readStatus: book.userReadStatus ?? "unread",
+            updatedAt: "",
+            serverURL: account.url,
+            serverName: account.name
+        )
+    }
+
     private func stamp(_ book: DashboardBook, serverURL: String, serverName: String) -> DashboardBook {
         var copy = book
         copy.serverURL = serverURL
@@ -161,11 +231,13 @@ final class RedesignedHomeViewModel {
 
 struct RedesignedHomeView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
 
     @State private var vm = RedesignedHomeViewModel()
     @State private var pendingDetail: BookDetailRequest?
     @State private var loadedDetail: BookDetailLoaded?
     @State private var showProfile = false
+    @State private var reauthAccount: ServerAccount?
 
     var body: some View {
         NavigationStack {
@@ -175,6 +247,10 @@ struct RedesignedHomeView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         header
+                        ReauthBannerStack(
+                            accounts: appState.accounts.filter { $0.needsReauth },
+                            onTap: { reauthAccount = $0 }
+                        )
                         if let book = vm.currentlyReading.first {
                             nowReadingHero(book: book)
                         } else if !vm.isLoading {
@@ -188,10 +264,22 @@ struct RedesignedHomeView: View {
                     .padding(.bottom, 40)
                 }
                 .scrollIndicators(.hidden)
+
+                // Loading overlay while a tile-tap is waiting on its
+                // api round-trip. Tile taps blast through this view's
+                // own load path; without an indicator the user sees
+                // nothing happen until the network resolves. Once the
+                // detail navigates, the overlay disappears with it.
+                if pendingDetail != nil {
+                    detailLoadingOverlay
+                }
             }
             .toolbar(.hidden, for: .navigationBar)
-            .task(id: appState.accounts.map(\.id)) { await vm.load(appState: appState) }
-            .refreshable { await vm.load(appState: appState) }
+            .sheet(item: $reauthAccount) { account in
+                ReauthSheet(account: account)
+            }
+            .task(id: appState.accounts.map(\.id)) { await vm.load(appState: appState, modelContainer: modelContext.container) }
+            .refreshable { await vm.load(appState: appState, modelContainer: modelContext.container) }
             .navigationDestination(item: $loadedDetail) { detail in
                 RedesignedBookDetailView(library: detail.library, book: detail.book)
             }
@@ -557,6 +645,31 @@ struct RedesignedHomeView: View {
         )
     }
 
+    @ViewBuilder
+    private var detailLoadingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35).ignoresSafeArea()
+            VStack(spacing: 12) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+                Text("Opening book…")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.Colors.appText2)
+            }
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Theme.Colors.appCard.opacity(0.95))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Theme.Colors.appLine, lineWidth: 0.5)
+            )
+        }
+        .transition(.opacity)
+    }
+
     private func loadDetail(request: BookDetailRequest) async {
         defer { pendingDetail = nil }
         let resolvedURL = request.serverURL.isEmpty
@@ -567,18 +680,64 @@ struct RedesignedHomeView: View {
             vm.error = "Couldn't find the server for this book."
             return
         }
+
+        // Short-circuit straight to cache when there's no network OR
+        // this server failed an api call within the last minute — one
+        // timeout teaches us the server's down so the next dozen book
+        // taps don't each cost 10 seconds.
+        if NetworkMonitor.shared.shouldSkipAPI(for: account.url) {
+            loadDetailFromCache(account: account, request: request)
+            return
+        }
+
         let client = appState.makeClient(serverURL: account.url)
         do {
             let fetched: Book = try await BookService(client: client).get(libraryId: request.libraryId, bookId: request.bookId)
-            // Construct a minimal Library — RedesignedBookDetailView only
-            // needs id, name, and serverURL to wire its lookups.
             var lib = try await LibraryService(client: client).get(request.libraryId)
             lib.serverURL = account.url
             lib.serverName = account.name
+            NetworkMonitor.shared.markServerReachable(account.url)
             loadedDetail = BookDetailLoaded(library: lib, book: fetched)
         } catch {
-            vm.error = error.localizedDescription
+            NetworkMonitor.shared.markServerUnreachable(account.url)
+            // Server unreachable mid-flight — try the on-device cache.
+            // If nothing's there either, surface the original error.
+            if !loadDetailFromCache(account: account, request: request) {
+                vm.error = error.localizedDescription
+            }
         }
+    }
+
+    /// Populate `loadedDetail` from the on-device caches. Returns true
+    /// when something was found (so the api-failure path knows whether
+    /// to surface the network error or quietly swap in the cached view).
+    @discardableResult
+    private func loadDetailFromCache(account: ServerAccount, request: BookDetailRequest) -> Bool {
+        let cache = BookCache(modelContainer: modelContext.container)
+        guard let cachedBook = cache.book(
+            serverURL: account.url,
+            libraryId: request.libraryId,
+            bookId: request.bookId
+        ) else { return false }
+        var lib = LibraryOfflineStore.shared.cachedLibraries()
+            .first(where: { $0.id == request.libraryId && $0.serverURL == account.url })
+            ?? Library(
+                id: request.libraryId,
+                name: request.libraryName,
+                description: "",
+                slug: "",
+                ownerId: "",
+                isPublic: false,
+                createdAt: "",
+                updatedAt: "",
+                bookCount: nil,
+                readingCount: nil,
+                readCount: nil
+            )
+        lib.serverURL = account.url
+        lib.serverName = account.name
+        loadedDetail = BookDetailLoaded(library: lib, book: cachedBook)
+        return true
     }
 }
 

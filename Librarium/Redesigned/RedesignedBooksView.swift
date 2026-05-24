@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// Redesigned books grid — mockup card #3.
@@ -17,11 +18,13 @@ struct RedesignedBooksView: View {
     let library: Library
     @Environment(AppState.self) private var appState
     @Environment(\.libraryBack) private var onBack
+    @Environment(\.modelContext) private var modelContext
 
     @State private var vm = BooksViewModel()
     @State private var searchTask: Task<Void, Never>?
     @State private var showAdd = false
     @State private var selectedBook: Book?
+    @State private var offlineStore = LibraryOfflineStore.shared
 
     /// True for a Lite-mode local library. Gates every api call below so
     /// URLSession never sees the synthetic `local://` base URL, and hides
@@ -32,6 +35,27 @@ struct RedesignedBooksView: View {
         library.serverURL.hasPrefix("local://")
     }
 
+    /// Whether this library is kept on-device for offline browsing. Lite
+    /// libraries are implicitly always cached (their data IS the library),
+    /// so the toggle is locked on for them.
+    private var isKeptOffline: Bool {
+        if isLocalLibrary { return true }
+        return offlineStore.isEnabled(for: library.clientKey)
+    }
+
+    /// In-progress sync percentage (0.0–1.0) or nil when not syncing.
+    /// Driven by `LibraryOfflineStore.bookCacheStates` which the sync
+    /// path updates on every page upserted. `@Observable` propagates
+    /// the change to this view automatically.
+    private var syncProgress: Double? {
+        if case .syncing(let p) = offlineStore.bookCacheStates[library.clientKey] {
+            return p
+        }
+        return nil
+    }
+
+    private var isSyncing: Bool { syncProgress != nil }
+
     var body: some View {
         ZStack {
             Theme.Colors.appBackground.ignoresSafeArea()
@@ -39,6 +63,7 @@ struct RedesignedBooksView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
                     header
+                    syncBanner
                     toolbarRow
                     filterRow
                     grid
@@ -55,17 +80,24 @@ struct RedesignedBooksView: View {
             // which is also what suppresses the "unsupported URL" alert
             // that bites when URLSession sees a `local://` base URL.
             guard !isLocalLibrary, vm.books.isEmpty else { return }
-            if appState.isOffline {
-                vm.loadFromCache(offlineKey: library.clientKey)
-            } else {
-                await vm.load(client: appState.makeClient(serverURL: library.serverURL), libraryId: library.id)
+            await loadBooks()
+        }
+        // Re-read SwiftData whenever the sync state ticks forward so the
+        // user watches books fill in instead of staring at an empty page
+        // until the sync completes. Cheap fetch; sync emits a handful of
+        // progress callbacks across the whole pagination.
+        .onChange(of: syncProgress) { _, _ in
+            guard isKeptOffline else { return }
+            let cache = BookCache(modelContainer: modelContext.container)
+            let cached = cache.books(for: library)
+            if !cached.isEmpty {
+                vm.books = cached
+                vm.total = cached.count
             }
         }
         .refreshable {
             guard !isLocalLibrary else { return }
-            if !appState.isOffline {
-                await vm.load(client: appState.makeClient(serverURL: library.serverURL), libraryId: library.id)
-            }
+            await loadBooks()
         }
         .onChange(of: vm.searchText) { _, _ in
             guard !isLocalLibrary, !appState.isOffline else { return }
@@ -122,6 +154,9 @@ struct RedesignedBooksView: View {
             }
             Spacer()
 
+            offlineToggle
+                .padding(.bottom, 4)
+
             sortMenu
                 .padding(.bottom, 4)
 
@@ -148,6 +183,101 @@ struct RedesignedBooksView: View {
         let count = vm.total > 0 ? vm.total : (library.bookCount ?? vm.books.count)
         if count == 0 { return "No books" }
         return "\(count.formatted()) book\(count == 1 ? "" : "s")"
+    }
+
+    /// Spotify-style download banner. Visible only while the offline sync
+    /// is paginating; shows a progress bar + the running count so the
+    /// user knows why the list is shorter than the library total. We re-
+    /// read SwiftData on every progress tick so the "downloaded so far"
+    /// number tracks reality, not just the api page count.
+    @ViewBuilder
+    private var syncBanner: some View {
+        if let syncProgress {
+            let downloaded = vm.books.count
+            let total = library.bookCount ?? max(downloaded, 0)
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.accent)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(syncBannerTitle(downloaded: downloaded, total: total))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText)
+                    ProgressView(value: max(0, min(1, syncProgress)))
+                        .tint(Theme.Colors.accent)
+                }
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Theme.Colors.accentSoft.opacity(0.6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(Theme.Colors.accent.opacity(0.35), lineWidth: 0.5)
+                    )
+            )
+            .padding(.horizontal, 18)
+            .padding(.bottom, 10)
+        }
+    }
+
+    private func syncBannerTitle(downloaded: Int, total: Int) -> String {
+        if total > 0 {
+            return "Downloading library — \(downloaded.formatted()) of \(total.formatted())"
+        }
+        return "Downloading library…"
+    }
+
+    @ViewBuilder
+    private var offlineToggle: some View {
+        let state = offlineStore.bookCacheStates[library.clientKey]
+        Button {
+            guard !isLocalLibrary else { return }
+            let enabled = offlineStore.isEnabled(for: library.clientKey)
+            let container = modelContext.container
+            offlineStore.setEnabled(!enabled, for: library.clientKey, modelContainer: container)
+            if !enabled,
+               let account = appState.accounts.first(where: { $0.url == library.serverURL }) {
+                // Just turned on — kick a sync immediately so the user
+                // sees progress instead of an empty cached state.
+                let accountID = account.id
+                let accessToken = account.accessToken
+                let client = appState.makeClient(serverURL: library.serverURL)
+                Task {
+                    await offlineStore.syncBooks(
+                        for: library,
+                        client: client,
+                        serverAccountID: accountID,
+                        accessToken: accessToken,
+                        modelContainer: container
+                    )
+                }
+            }
+        } label: {
+            Image(systemName: offlineIconName(state: state))
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(isKeptOffline ? Theme.Colors.accent : Theme.Colors.appText3)
+                .frame(width: 38, height: 38)
+                .background(Color.white.opacity(0.08), in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+        }
+        // Lite libraries are inherently offline — the user can't toggle
+        // them off, but we keep the icon visible so the indicator state
+        // stays consistent across remote + local libraries.
+        .disabled(isLocalLibrary)
+        .opacity(isLocalLibrary ? 0.7 : 1.0)
+    }
+
+    private func offlineIconName(state: BookCacheState?) -> String {
+        if isLocalLibrary { return "iphone.gen3" }
+        switch state {
+        case .syncing:
+            return "arrow.triangle.2.circlepath.icloud"
+        case .cached:
+            return "checkmark.icloud.fill"
+        case .notCached, nil:
+            return isKeptOffline ? "icloud.and.arrow.down" : "icloud"
+        }
     }
 
     @ViewBuilder
@@ -291,21 +421,108 @@ struct RedesignedBooksView: View {
     @ViewBuilder
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: "books.vertical")
+            Image(systemName: emptyStateIcon)
                 .font(.system(size: 32))
                 .foregroundStyle(Theme.Colors.appText3)
-            Text(vm.hasActiveFilters ? "No matches" : "No books yet")
+            Text(emptyStateTitle)
                 .font(Theme.Fonts.cardTitle)
                 .foregroundStyle(Theme.Colors.appText)
-            Text(vm.hasActiveFilters
-                 ? "Try a different search or filter."
-                 : "Add your first book to get started.")
+            Text(emptyStateMessage)
                 .font(Theme.Fonts.rowMeta)
                 .foregroundStyle(Theme.Colors.appText3)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, minHeight: 240)
         .padding(.horizontal, 18)
+    }
+
+    /// When the offline sync is running we don't want the empty state to
+    /// read like the library is broken — it just hasn't finished
+    /// downloading. Swap copy + icon while syncing so the user pairs the
+    /// banner above with the matching empty body.
+    private var emptyStateIcon: String {
+        if isSyncing { return "arrow.triangle.2.circlepath.icloud" }
+        return "books.vertical"
+    }
+
+    private var emptyStateTitle: String {
+        if isSyncing { return "Downloading your library…" }
+        return vm.hasActiveFilters ? "No matches" : "No books yet"
+    }
+
+    private var emptyStateMessage: String {
+        if isSyncing { return "Books will appear as they sync." }
+        if vm.hasActiveFilters { return "Try a different search or filter." }
+        return isLocalLibrary
+            ? "Use the scan button to add books to your library."
+            : "Add your first book to get started."
+    }
+
+    // MARK: - Load + sync helpers
+
+    /// Single entry point for the BooksView load path. Strategy:
+    ///
+    /// - Kept-offline (and Lite) libraries are SwiftData-primary: render
+    ///   from the cache immediately so opening the view is instant, then
+    ///   kick a background sync to refresh from the server when online.
+    /// - Non-cached remote libraries hit the api directly. On failure the
+    ///   user gets the standard error alert — there's nothing on-device
+    ///   to show them.
+    ///
+    /// In both paths a successful api response writes through to
+    /// SwiftData so a future offline visit picks up the same view.
+    private func loadBooks() async {
+        let client = appState.makeClient(serverURL: library.serverURL)
+        let container = modelContext.container
+        let accountID = appState.accounts
+            .first(where: { $0.url == library.serverURL })?.id
+
+        if isKeptOffline, !isLocalLibrary {
+            // Render from SwiftData first so the user sees their library
+            // even before the network round-trips. The full sync below
+            // backfills any missing pages and updates rating/status etc.
+            let cache = BookCache(modelContainer: container)
+            let cached = cache.books(for: library)
+            if !cached.isEmpty {
+                vm.books = cached
+                vm.total = cached.count
+                vm.error = nil
+            }
+
+            // Online refresh. When the server is reachable, syncBooks
+            // pulls every page and write-throughs to SwiftData. When
+            // it fails (truly offline) we keep the cached view we just
+            // painted — no error alert needed. Skip the round-trip
+            // entirely when NetworkMonitor knows we're offline.
+            guard !appState.isOffline else { return }
+            if let accountID, let accessToken = appState.accounts.first(where: { $0.id == accountID })?.accessToken {
+                await LibraryOfflineStore.shared.syncBooks(
+                    for: library,
+                    client: client,
+                    serverAccountID: accountID,
+                    accessToken: accessToken,
+                    modelContainer: container
+                )
+                let refreshed = cache.books(for: library)
+                if !refreshed.isEmpty {
+                    vm.books = refreshed
+                    vm.total = refreshed.count
+                    vm.error = nil
+                }
+            }
+            return
+        }
+
+        // Not kept offline — straight api fetch. On success, still write
+        // through to SwiftData so toggling "Keep offline" later finds
+        // some data already there.
+        await vm.load(client: client, libraryId: library.id)
+        if vm.error == nil, let accountID {
+            let books = vm.books
+            Task.detached(priority: .background) {
+                BookCache(modelContainer: container).upsert(books, for: library, serverAccountID: accountID)
+            }
+        }
     }
 }
 

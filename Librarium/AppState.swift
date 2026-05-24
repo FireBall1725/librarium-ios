@@ -8,7 +8,13 @@ final class AppState {
 
     private(set) var accounts: [ServerAccount] = []
     var isAuthenticated: Bool { !accounts.isEmpty }
-    var isOffline = false
+    /// Reflects the live network reachability — true when there's no
+    /// satisfied network path, which is the airplane-mode case. View
+    /// code uses this to skip api round-trips and read from cache
+    /// directly instead of paying URLSession's 10-second timeout.
+    /// Reading via `appState.isOffline` automatically observes the
+    /// underlying `NetworkMonitor.shared.isOnline` thanks to `@Observable`.
+    var isOffline: Bool { !NetworkMonitor.shared.isOnline }
 
     var currentUser: User? { primaryAccount?.user ?? accounts.first?.user }
 
@@ -208,7 +214,6 @@ final class AppState {
         accounts = []
         activeAccountID = nil
         primaryAccountID = nil
-        isOffline = false
         UserDefaults.standard.removeObject(forKey: "server_accounts")
         UserDefaults.standard.removeObject(forKey: "primary_account_id")
         for url in urls {

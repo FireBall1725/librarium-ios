@@ -10,7 +10,14 @@ struct LibrariumApp: App {
     /// Built lazily so a failure to open the store crashes early with
     /// a useful stack trace rather than silently degrading at runtime.
     let modelContainer: ModelContainer = {
-        let schema = Schema([PersistedInteraction.self, PendingSyncOp.self, PersistedLibrary.self])
+        let schema = Schema([
+            PersistedInteraction.self,
+            PendingSyncOp.self,
+            PersistedLibrary.self,
+            PersistedBook.self,
+            PersistedSeries.self,
+            PersistedSeriesEntry.self,
+        ])
         let config = ModelConfiguration(schema: schema)
         do {
             return try ModelContainer(for: schema, configurations: [config])

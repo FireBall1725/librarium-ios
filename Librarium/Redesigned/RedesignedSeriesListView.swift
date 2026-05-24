@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// Top-level Series tab — browses every series across the primary
@@ -13,6 +14,7 @@ import SwiftUI
 /// other servers are ignored here; cross-server aggregation lands later.
 struct RedesignedSeriesListView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
 
     @State private var vm = RedesignedSeriesListViewModel()
     @State private var searchText = ""
@@ -34,8 +36,12 @@ struct RedesignedSeriesListView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(.hidden, for: .navigationBar)
-            .task(id: appState.accounts.map(\.id)) { await vm.load(appState: appState) }
-            .refreshable { await vm.load(appState: appState) }
+            .task(id: appState.accounts.map(\.id)) {
+                await vm.load(appState: appState, modelContainer: modelContext.container)
+            }
+            .refreshable {
+                await vm.load(appState: appState, modelContainer: modelContext.container)
+            }
             .navigationDestination(item: $selectedSeries) { entry in
                 RedesignedSeriesDetailView(library: entry.library, series: entry.series)
             }
@@ -144,20 +150,65 @@ struct RedesignedSeriesListView: View {
     @ViewBuilder
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: "list.number")
+            Image(systemName: emptyStateIcon)
                 .font(.system(size: 32))
                 .foregroundStyle(Theme.Colors.appText3)
-            Text("No series yet")
+            Text(emptyStateTitle)
                 .font(Theme.Fonts.cardTitle)
                 .foregroundStyle(Theme.Colors.appText)
-            Text("Group books together by adding them to a series.")
+            Text(emptyStateMessage)
                 .font(Theme.Fonts.ui(13, weight: .medium))
                 .foregroundStyle(Theme.Colors.appText3)
                 .multilineTextAlignment(.center)
+            #if DEBUG
+            // Surface SwiftData state so we can see whether the cache
+            // is populated vs whether the read predicate is filtering
+            // everything out. Drops out of release builds.
+            Text(debugCacheLine)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(Theme.Colors.appText3.opacity(0.6))
+                .padding(.top, 8)
+            #endif
         }
         .frame(maxWidth: .infinity, minHeight: 240)
         .padding(.horizontal, 22)
     }
+
+    private var isOfflineForSeries: Bool {
+        let remotes = appState.accounts.filter { $0.kind == .remote && !$0.needsReauth }
+        return !remotes.isEmpty && remotes.allSatisfy { NetworkMonitor.shared.shouldSkipAPI(for: $0.url) }
+    }
+
+    private var emptyStateIcon: String {
+        isOfflineForSeries ? "icloud.slash" : "list.number"
+    }
+
+    private var emptyStateTitle: String {
+        isOfflineForSeries ? "No series cached" : "No series yet"
+    }
+
+    private var emptyStateMessage: String {
+        isOfflineForSeries
+            ? "Connect to the server, open the Series tab, and let it sync — then series will appear here offline."
+            : "Group books together by adding them to a series."
+    }
+
+    #if DEBUG
+    private var debugCacheLine: String {
+        let cache = SeriesCache(modelContainer: modelContext.container)
+        let cacheCounts = appState.accounts
+            .filter { $0.kind == .remote }
+            .map { ($0.name, cache.seriesByServer(serverURL: $0.url).count) }
+        let cacheStr = cacheCounts.map { "\($0.0):\($0.1)" }.joined(separator: " ")
+        let netStr = NetworkMonitor.shared.isOnline ? "online" : "offline"
+        let acctStr = appState.accounts.map { acct -> String in
+            let k = acct.kind == .local ? "L" : "R"
+            let r = acct.needsReauth ? "!" : ""
+            return "\(k)\(r)"
+        }.joined(separator: ",")
+        return "cache[\(cacheStr)] vm:\(vm.entries.count) net:\(netStr) accts:[\(acctStr)]"
+    }
+    #endif
 
     // MARK: - Row
 
@@ -242,11 +293,22 @@ final class RedesignedSeriesListViewModel {
     /// own libraries → series; we flatten across all servers and sort by
     /// name. Lite accounts have no api so they're skipped; their local
     /// series will get layered in when the SwiftData book store lands.
-    func load(appState: AppState) async {
+    func load(appState: AppState, modelContainer: ModelContainer) async {
         isLoading = true
         defer { isLoading = false }
 
-        let remotes = appState.accounts.filter { $0.kind == .remote && !$0.needsReauth }
+        // Offline / unreachable-server path runs FIRST and ignores
+        // `needsReauth` — the user can't re-auth while offline, but
+        // their cached series should still be browsable. Auth state
+        // is only relevant for the online path below.
+        let allRemote = appState.accounts.filter { $0.kind == .remote }
+        let offline = allRemote.allSatisfy { NetworkMonitor.shared.shouldSkipAPI(for: $0.url) }
+        if !allRemote.isEmpty, offline {
+            await loadOffline(remotes: allRemote, modelContainer: modelContainer)
+            return
+        }
+
+        let remotes = allRemote.filter { !$0.needsReauth }
         guard !remotes.isEmpty else {
             entries = []
             showLibraryBadge = false
@@ -255,11 +317,13 @@ final class RedesignedSeriesListViewModel {
 
         var collected: [SeriesListEntry] = []
         var totalLibCount = 0
+        let cache = SeriesCache(modelContainer: modelContainer)
 
         await withTaskGroup(of: PerAccountSeries.self) { group in
             for account in remotes {
                 let url = account.url
                 let name = account.name
+                let accountID = account.id
                 group.addTask {
                     let client = await appState.makeClient(serverURL: url)
                     var libs: [Library]
@@ -269,8 +333,20 @@ final class RedesignedSeriesListViewModel {
                             libs[i].serverURL = url
                             libs[i].serverName = name
                         }
+                        NetworkMonitor.shared.markServerReachable(url)
                     } catch {
-                        return PerAccountSeries(libraryCount: 0, entries: [])
+                        // Server unreachable — fall back to SwiftData
+                        // for whatever this account has cached. Mark the
+                        // server unreachable so subsequent visits within
+                        // a minute skip the timeout and use the cache
+                        // directly.
+                        NetworkMonitor.shared.markServerUnreachable(url)
+                        let cached = await Self.offlineSeriesForAccount(
+                            serverURL: url,
+                            serverName: name,
+                            modelContainer: modelContainer
+                        )
+                        return PerAccountSeries(libraryCount: cached.libraryCount, entries: cached.entries)
                     }
                     var slice: [SeriesListEntry] = []
                     await withTaskGroup(of: (Library, [Series]).self) { inner in
@@ -282,6 +358,11 @@ final class RedesignedSeriesListViewModel {
                         }
                         for await (lib, list) in inner {
                             slice.append(contentsOf: list.map { SeriesListEntry(series: $0, library: lib) })
+                            // Write through to the cache so offline visits
+                            // to the Series tab don't need a prior visit to
+                            // BooksView to populate. Best-effort — failure
+                            // just means the offline tab stays empty.
+                            cache.upsert(list, for: lib, serverAccountID: accountID)
                         }
                     }
                     return PerAccountSeries(libraryCount: libs.count, entries: slice)
@@ -297,6 +378,65 @@ final class RedesignedSeriesListViewModel {
         entries = collected.sorted {
             $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending
         }
+    }
+
+    /// Offline path. Reads every cached `Series` row for each remote
+    /// account and stamps each one with its library context so the
+    /// mosaic's cover lookup still hits the right server URL.
+    private func loadOffline(remotes: [ServerAccount], modelContainer: ModelContainer) async {
+        var collected: [SeriesListEntry] = []
+        var totalLibCount = 0
+
+        for account in remotes {
+            let chunk = await Self.offlineSeriesForAccount(
+                serverURL: account.url,
+                serverName: account.name,
+                modelContainer: modelContainer
+            )
+            totalLibCount += chunk.libraryCount
+            collected.append(contentsOf: chunk.entries)
+        }
+
+        showLibraryBadge = totalLibCount > 1
+        entries = collected.sorted {
+            $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending
+        }
+    }
+
+    /// Per-account offline read. Pulled out so both the airplane-mode
+    /// short-circuit AND the online-fan-out catch can call it without
+    /// duplication. Each entry is stamped with the right library +
+    /// server URL so detail nav + cover lookups still work.
+    private static func offlineSeriesForAccount(
+        serverURL: String,
+        serverName: String,
+        modelContainer: ModelContainer
+    ) async -> PerAccountSeries {
+        let cache = SeriesCache(modelContainer: modelContainer)
+        let store = LibraryOfflineStore.shared
+        let libs = store.cachedLibraries().filter { $0.serverURL == serverURL }
+        let libsByID = Dictionary(uniqueKeysWithValues: libs.map { ($0.id, $0) })
+        let serverSeries = cache.seriesByServer(serverURL: serverURL)
+        var entries: [SeriesListEntry] = []
+        for series in serverSeries {
+            var lib = libsByID[series.libraryId] ?? Library(
+                id: series.libraryId,
+                name: "Library",
+                description: "",
+                slug: "",
+                ownerId: "",
+                isPublic: false,
+                createdAt: "",
+                updatedAt: "",
+                bookCount: nil,
+                readingCount: nil,
+                readCount: nil
+            )
+            lib.serverURL = serverURL
+            lib.serverName = serverName
+            entries.append(SeriesListEntry(series: series, library: lib))
+        }
+        return PerAccountSeries(libraryCount: libs.count, entries: entries)
     }
 
     private func primaryAccount(appState: AppState) -> ServerAccount? {

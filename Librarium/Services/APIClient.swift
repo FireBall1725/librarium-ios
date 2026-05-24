@@ -140,9 +140,12 @@ final class APIClient {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         req.httpBody = body
-        // Default URLSession timeout is 60s. Offline/unreachable requests should
-        // fail fast so the libraries list can render its cached fallback within
-        // a few seconds instead of leaving the user staring at a spinner.
+        // Default URLSession timeout is 60s. We trim to 10s so the
+        // "server is down but network is up" path fails before the user
+        // gives up. NetworkMonitor short-circuits the airplane-mode case
+        // entirely, so this timeout only ever applies when network is
+        // technically working — 5s would have starved slow LANs / busy
+        // servers on legitimate requests like the search fan-out.
         req.timeoutInterval = 10
         return req
     }
