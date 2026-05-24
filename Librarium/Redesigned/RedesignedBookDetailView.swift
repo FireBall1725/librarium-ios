@@ -151,6 +151,9 @@ struct RedesignedBookDetailView: View {
                 },
                 onMarkFinished: {
                     Task { await applyReadStatus("read") }
+                },
+                onSetPageCount: { newPageCount in
+                    await setEditionPageCount(newPageCount)
                 }
             )
         }
@@ -298,6 +301,47 @@ struct RedesignedBookDetailView: View {
             modelContainer: modelContext.container
         )
         Task { try? await service.drainOutbox() }
+    }
+
+    /// Save a new page_count onto the primary edition. Carries every
+    /// other edition field through unchanged because the api uses
+    /// CreateEditionRequest as a full-replacement body. Returns true
+    /// on success so the Progress sheet can swap from the page-count
+    /// entry field to the slider.
+    private func setEditionPageCount(_ newPageCount: Int) async -> Bool {
+        guard let edition = primaryEdition else { return false }
+        let client = appState.makeClient(serverURL: library.serverURL)
+        let body = CreateEditionRequest(
+            format: edition.format,
+            language: edition.language,
+            editionName: edition.editionName,
+            narrator: edition.narrator,
+            publisher: edition.publisher,
+            publishDate: edition.publishDate,
+            isbn10: edition.isbn10,
+            isbn13: edition.isbn13,
+            description: edition.description,
+            pageCount: newPageCount,
+            copyCount: edition.copyCount,
+            isPrimary: edition.isPrimary
+        )
+        do {
+            let updated = try await BookService(client: client).updateEdition(
+                libraryId: library.id,
+                bookId: currentBook.id,
+                editionId: edition.id,
+                body: body
+            )
+            if let idx = editions.firstIndex(where: { $0.id == updated.id }) {
+                editions[idx] = updated
+            }
+            return true
+        } catch {
+            #if DEBUG
+            print("📝 [setEditionPageCount] failed: \(error)")
+            #endif
+            return false
+        }
     }
 
     /// Apply a new reading-progress value through the outbox. The

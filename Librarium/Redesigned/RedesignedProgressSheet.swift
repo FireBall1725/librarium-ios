@@ -15,24 +15,33 @@ import SwiftUI
 /// Writes go through the outbox: optimistic update on PersistedInteraction
 /// + PendingSyncOp.progress + background drain. No direct PUT.
 struct RedesignedProgressSheet: View {
-    let pageCount: Int?
     let initialPagesRead: Int?
     let onSavePages: (Int?) -> Void
     let onMarkFinished: () -> Void
+    /// Called when the sheet wants the edition's page_count saved.
+    /// Returns true on success so the sheet can swap from the input
+    /// field to the slider.
+    let onSetPageCount: (Int) async -> Bool
 
+    @State private var pageCount: Int?
     @State private var pages: Double
+    @State private var pageCountInput: String = ""
+    @State private var savingPageCount = false
+    @FocusState private var pageCountFocused: Bool
     @Environment(\.dismiss) private var dismiss
 
     init(
         pageCount: Int?,
         initialPagesRead: Int?,
         onSavePages: @escaping (Int?) -> Void,
-        onMarkFinished: @escaping () -> Void
+        onMarkFinished: @escaping () -> Void,
+        onSetPageCount: @escaping (Int) async -> Bool
     ) {
-        self.pageCount = pageCount
         self.initialPagesRead = initialPagesRead
         self.onSavePages = onSavePages
         self.onMarkFinished = onMarkFinished
+        self.onSetPageCount = onSetPageCount
+        self._pageCount = State(initialValue: pageCount)
         self._pages = State(initialValue: Double(initialPagesRead ?? 0))
     }
 
@@ -58,7 +67,7 @@ struct RedesignedProgressSheet: View {
                 slider(pc: pc)
                 actions(pc: pc)
             } else {
-                noPageCountMessage
+                pageCountEntry
             }
 
             Spacer()
@@ -132,13 +141,58 @@ struct RedesignedProgressSheet: View {
     }
 
     @ViewBuilder
-    private var noPageCountMessage: some View {
-        Text("This edition has no page count yet. Add one to the edition's details to track reading progress.")
-            .font(.system(size: 14))
-            .foregroundStyle(Theme.Colors.appText2)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
+    private var pageCountEntry: some View {
+        VStack(spacing: 12) {
+            Text("This edition doesn't have a page count yet. Set one to start tracking progress.")
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.Colors.appText2)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+            HStack(spacing: 10) {
+                TextField("Pages", text: $pageCountInput)
+                    .keyboardType(.numberPad)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($pageCountFocused)
+                    .frame(maxWidth: 140)
+
+                Button {
+                    Task { await commitPageCount() }
+                } label: {
+                    Group {
+                        if savingPageCount {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Set")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .frame(width: 64, height: 32)
+                    .background(Theme.Colors.accent, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(parsedPageCount == nil || savingPageCount)
+            }
+        }
+    }
+
+    private var parsedPageCount: Int? {
+        guard let n = Int(pageCountInput), n > 0 else { return nil }
+        return n
+    }
+
+    private func commitPageCount() async {
+        guard let n = parsedPageCount else { return }
+        pageCountFocused = false
+        savingPageCount = true
+        let success = await onSetPageCount(n)
+        savingPageCount = false
+        if success {
+            pageCount = n
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
     }
 
     private func save() {
