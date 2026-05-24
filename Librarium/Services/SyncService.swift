@@ -43,9 +43,18 @@ actor SyncService {
         set { userDefaults.set(newValue, forKey: cursorKey) }
     }
 
-    /// Run one drain of the sync delta. Returns after the server reports
-    /// `has_more: false`.
+    /// Push any queued outbox ops, then drain the sync delta.
+    /// Push-then-pull is the conventional order: we send our local
+    /// mutations first so the server applies them, then pull any
+    /// remaining server-side changes (including the canonical state
+    /// of fields the server may have overridden via LWW).
     func syncOnce() async throws {
+        try await drainOutbox()
+        try await pullChanges()
+    }
+
+    /// Drain the sync delta until the server reports `has_more: false`.
+    func pullChanges() async throws {
         let context = ModelContext(modelContainer)
         let formatter = SyncTimestampFormatter.shared
         var since = lastSyncedThrough
@@ -76,6 +85,81 @@ actor SyncService {
         #if DEBUG
         print("📥 [SyncService \(serverAccountID.uuidString.prefix(8))] synced through \(since)")
         #endif
+    }
+
+    /// Push every queued `PendingSyncOp` for this account to
+    /// `POST /sync/apply` in batches, then clear the ops the server
+    /// acknowledged (applied / discarded_stale / not_found / invalid).
+    /// Transient errors leave the rows in place for the next drain.
+    func drainOutbox() async throws {
+        let context = ModelContext(modelContainer)
+        let accountID = serverAccountID
+
+        while true {
+            let descriptor = FetchDescriptor<PendingSyncOp>(
+                predicate: #Predicate { $0.serverAccountID == accountID },
+                sortBy: [SortDescriptor(\.createdAt, order: .forward)]
+            )
+            // Cap each request at the server's batch limit.
+            var fetch = descriptor
+            fetch.fetchLimit = pageLimit
+            let pending = try context.fetch(fetch)
+            if pending.isEmpty { break }
+
+            let formatter = SyncTimestampFormatter.shared
+            let opRequests: [SyncApplyOpRequest] = pending.map { row in
+                let value: SyncJSONValue?
+                if let data = row.valueJSON,
+                   let decoded = try? JSONDecoder().decode(SyncJSONValue.self, from: data) {
+                    value = decoded
+                } else {
+                    value = nil
+                }
+                return SyncApplyOpRequest(
+                    opId: row.opId,
+                    entityType: row.entityType,
+                    entityId: row.entityId,
+                    field: row.field,
+                    value: value,
+                    deleted: row.deleted ? true : nil,
+                    updatedAt: formatter.string(from: row.updatedAt)
+                )
+            }
+
+            let req = SyncApplyRequest(clientId: nil, ops: opRequests)
+            let resp: SyncApplyResponse = try await api.post("/api/v1/sync/apply", body: req)
+
+            // Index results by op_id so we can clear the right rows.
+            let resultsByOp = Dictionary(uniqueKeysWithValues: resp.results.map { ($0.opId, $0) })
+            for row in pending {
+                guard let result = resultsByOp[row.opId] else {
+                    // Server didn't return a result for this op; leave
+                    // queued and try next drain.
+                    continue
+                }
+                switch result.status {
+                case SyncApplyStatus.applied,
+                     SyncApplyStatus.discardedStale,
+                     SyncApplyStatus.notFound,
+                     SyncApplyStatus.invalid:
+                    context.delete(row)
+                case SyncApplyStatus.error:
+                    #if DEBUG
+                    print("📤 [SyncService] op \(row.opId) errored: \(result.error ?? "<no detail>"); leaving queued")
+                    #endif
+                default:
+                    #if DEBUG
+                    print("📤 [SyncService] op \(row.opId) unknown status \(result.status); leaving queued")
+                    #endif
+                }
+            }
+            try context.save()
+
+            // If the server didn't ack everything we sent (rare),
+            // break so we don't loop forever on transient errors.
+            if pending.count == pageLimit { continue }
+            break
+        }
     }
 
     /// Apply a single op to the local store. Best-effort: if the local

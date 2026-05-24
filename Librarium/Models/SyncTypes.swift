@@ -111,3 +111,47 @@ enum SyncTimestampFormatter {
         return f
     }()
 }
+
+// MARK: - Outbox push (POST /sync/apply)
+
+/// Wire-shape request for `POST /sync/apply`. Mirrors the api's
+/// `responses.SyncApplyRequest`.
+struct SyncApplyRequest: Encodable {
+    let clientId: UUID?
+    let ops: [SyncApplyOpRequest]
+}
+
+/// Wire-shape per-op entry. Named to disambiguate from the decode-side
+/// `SyncOp`.
+struct SyncApplyOpRequest: Encodable {
+    let opId: UUID
+    let entityType: String
+    let entityId: UUID
+    let field: String?
+    let value: SyncJSONValue?
+    let deleted: Bool?
+    /// RFC3339 timestamp; encoded as String to match the server's
+    /// `time.Time` JSON shape.
+    let updatedAt: String
+}
+
+/// Decode-side response from `POST /sync/apply`.
+struct SyncApplyResponse: Decodable {
+    let results: [SyncApplyResult]
+    let serverTime: String
+}
+
+struct SyncApplyResult: Decodable {
+    let opId: UUID
+    let status: String
+    let error: String?
+}
+
+/// Status values mirrored from the api (`repository.SyncApplyStatus*`).
+enum SyncApplyStatus {
+    static let applied        = "applied"
+    static let discardedStale = "discarded_stale"
+    static let notFound       = "not_found"
+    static let invalid        = "invalid"
+    static let error          = "error"
+}
