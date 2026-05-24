@@ -5,10 +5,12 @@ import SwiftUI
 
 /// Mockup card #28 — Rate sheet.
 ///
-/// v1: full-star precision only (1-5 stars), mapping to the api's
-/// half-star integer scale (1-10) by doubling. Tap a star to save and
-/// dismiss; tap "Clear" to remove the rating. Half-star precision and
-/// the optional one-line review from the mockup land in a follow-up.
+/// Half-star precision: each star is split into left and right tap
+/// zones. Tapping the LEFT half sets the half-star value (1 / 3 / 5 /
+/// 7 / 9 on the raw scale), tapping the RIGHT half sets the full-star
+/// value (2 / 4 / 6 / 8 / 10). Tap dismisses; "Clear rating" removes
+/// the rating entirely. Optional one-line review from the mockup
+/// lands in a follow-up.
 ///
 /// Writes go through the outbox: optimistic UI flip + PendingSyncOp +
 /// background drain. No direct PUT.
@@ -16,13 +18,14 @@ struct RedesignedRateSheet: View {
     let initialRawRating: Int?
     let onSave: (Int?) -> Void
 
-    @State private var selectedStars: Int
+    /// 0-10 half-star integer (matches the api column).
+    @State private var selectedRaw: Int
     @Environment(\.dismiss) private var dismiss
 
     init(initialRawRating: Int?, onSave: @escaping (Int?) -> Void) {
         self.initialRawRating = initialRawRating
         self.onSave = onSave
-        self._selectedStars = State(initialValue: (initialRawRating ?? 0) / 2)
+        self._selectedRaw = State(initialValue: initialRawRating ?? 0)
     }
 
     var body: some View {
@@ -37,18 +40,9 @@ struct RedesignedRateSheet: View {
                 .foregroundStyle(Theme.Colors.appText)
                 .padding(.top, 4)
 
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 ForEach(1...5, id: \.self) { i in
-                    Button {
-                        save(rawRating: i * 2)
-                    } label: {
-                        Image(systemName: i <= selectedStars ? "star.fill" : "star")
-                            .font(.system(size: 42, weight: .regular))
-                            .foregroundStyle(Theme.Colors.gold)
-                            .contentShape(Rectangle())
-                            .frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(.plain)
+                    starButton(index: i)
                 }
             }
 
@@ -71,8 +65,39 @@ struct RedesignedRateSheet: View {
         .presentationDragIndicator(.hidden)
     }
 
+    @ViewBuilder
+    private func starButton(index: Int) -> some View {
+        let halfValue = index * 2 - 1
+        let fullValue = index * 2
+
+        let iconName: String = {
+            if selectedRaw >= fullValue { return "star.fill" }
+            if selectedRaw >= halfValue { return "star.leadinghalf.filled" }
+            return "star"
+        }()
+
+        ZStack {
+            Image(systemName: iconName)
+                .font(.system(size: 42, weight: .regular))
+                .foregroundStyle(Theme.Colors.gold)
+                .allowsHitTesting(false)
+
+            HStack(spacing: 0) {
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { save(rawRating: halfValue) }
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { save(rawRating: fullValue) }
+            }
+        }
+        .frame(width: 48, height: 48)
+    }
+
     private func save(rawRating: Int?) {
-        selectedStars = (rawRating ?? 0) / 2
+        selectedRaw = rawRating ?? 0
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         onSave(rawRating)
         dismiss()
