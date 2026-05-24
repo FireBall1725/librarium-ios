@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showSplash = true
 
@@ -18,7 +19,16 @@ struct ContentView: View {
             }
         }
         .task(id: appState.isAuthenticated) {
-            await runInitialSync()
+            await runSyncAllAccounts()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Re-drain on foreground so the local store catches up with
+            // anything that landed on the server while the app was in
+            // the background. Cheap when the outbox is empty and the
+            // server has no new ops.
+            if newPhase == .active {
+                Task { await runSyncAllAccounts() }
+            }
         }
     }
 
@@ -31,27 +41,34 @@ struct ContentView: View {
         }
     }
 
-    /// Kick off a sync drain for the primary account on launch so the
-    /// local SwiftData store catches up with anything that changed on
-    /// the server since the last session. Best-effort: errors are
-    /// logged but don't surface in the UI (the existing read paths
-    /// still hit the api directly until this rebuild is wired through).
-    private func runInitialSync() async {
-        guard appState.isAuthenticated,
-              let account = appState.primaryAccount else { return }
+    /// Run a sync drain for every authenticated account in parallel.
+    /// Best-effort: errors per account are logged but don't surface in
+    /// the UI (the existing read paths still hit the api directly
+    /// until this rebuild is wired through). Each account has its own
+    /// cursor, so a failure on one doesn't drag the others.
+    private func runSyncAllAccounts() async {
+        guard appState.isAuthenticated else { return }
+        let container = modelContext.container
+        let accounts = appState.accounts
 
-        let api = appState.makeClient()
-        let service = SyncService(
-            api: api,
-            serverAccountID: account.id,
-            modelContainer: modelContext.container
-        )
-        do {
-            try await service.syncOnce()
-        } catch {
-            #if DEBUG
-            print("📥 [ContentView] initial sync failed: \(error)")
-            #endif
+        await withTaskGroup(of: Void.self) { group in
+            for account in accounts {
+                group.addTask {
+                    let api = await appState.makeClient(serverURL: account.url)
+                    let service = SyncService(
+                        api: api,
+                        serverAccountID: account.id,
+                        modelContainer: container
+                    )
+                    do {
+                        try await service.syncOnce()
+                    } catch {
+                        #if DEBUG
+                        print("📥 [ContentView] sync failed for account \(account.id): \(error)")
+                        #endif
+                    }
+                }
+            }
         }
     }
 }
