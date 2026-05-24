@@ -26,6 +26,11 @@ struct RedesignedBookDetailView: View {
     @State private var editions: [BookEdition] = []
     @State private var selectedEditionID: String?
     @State private var interaction: UserBookInteraction?
+    /// Local SwiftData mirror of the primary edition's interaction.
+    /// Source of truth for fields covered by the sync protocol
+    /// (`isFavorite`, `rating`); other fields still come from
+    /// `interaction` until they get their own sync columns.
+    @State private var persisted: PersistedInteraction?
     @State private var shelves: [Shelf] = []
     @State private var seriesRefs: [BookSeriesRef] = []
     @State private var activeLoan: Loan?
@@ -123,7 +128,7 @@ struct RedesignedBookDetailView: View {
         }
         .sheet(isPresented: $showRateSheet) {
             RedesignedRateSheet(
-                initialRawRating: interaction?.rating.map { Int($0) }
+                initialRawRating: displayRawRating
             ) { newRawRating in
                 Task { await applyRating(newRawRating) }
             }
@@ -178,8 +183,8 @@ struct RedesignedBookDetailView: View {
             // interaction) has loaded so the optimistic toggle has a
             // record to write to.
             navIconButton(
-                systemName: (interaction?.isFavorite == true) ? "bookmark.fill" : "bookmark",
-                tint: (interaction?.isFavorite == true) ? Theme.Colors.gold : Theme.Colors.appText
+                systemName: displayIsFavorite ? "bookmark.fill" : "bookmark",
+                tint: displayIsFavorite ? Theme.Colors.gold : Theme.Colors.appText
             ) {
                 Task { await toggleFavorite() }
             }
@@ -221,105 +226,109 @@ struct RedesignedBookDetailView: View {
         }
     }
 
-    /// Apply a new rating (or clear it) through the outbox.
-    /// Same pattern as toggleFavorite: optimistic UI flip, enqueue a
-    /// PendingSyncOp on the right account, kick a background drain.
-    /// Direct PUT to /my-interaction for this field is gone.
-    private func applyRating(_ newRawRating: Int?) async {
-        guard let i = interaction else { return }
-        let now = Date()
-        let nowString = SyncTimestampFormatter.shared.string(from: now)
-
-        let newRating = newRawRating.map { Double($0) }
-        interaction = i.with(rating: newRating, updatedAt: nowString)
-
-        guard let entityID = UUID(uuidString: i.id),
+    /// Mutate the local PersistedInteraction (creating it on the fly
+    /// if the row doesn't exist yet) and enqueue an outbox op. Returns
+    /// the account ID so the caller can kick a drain. Returns nil only
+    /// when the entity/edition/account refs can't be resolved.
+    private func writeLocal(_ mutate: (PersistedInteraction, Date) -> Void) -> UUID? {
+        guard let i = interaction,
+              let entityID = UUID(uuidString: i.id),
+              let editionID = (primaryEdition.flatMap { UUID(uuidString: $0.id) }),
               let account = appState.accounts.first(where: { $0.url == library.serverURL })
-        else { return }
+        else { return nil }
 
-        let op = PendingSyncOp.rating(
-            serverAccountID: account.id,
-            entityID: entityID,
-            value: newRawRating,
-            updatedAt: now
-        )
-        modelContext.insert(op)
+        let now = Date()
+        let row: PersistedInteraction
+        if let p = persisted {
+            row = p
+        } else {
+            row = PersistedInteraction(
+                id: entityID,
+                serverAccountID: account.id,
+                bookEditionID: editionID,
+                readStatus: i.readStatus,
+                isFavorite: i.isFavorite,
+                updatedAt: SyncTimestampFormatter.shared.date(from: i.updatedAt) ?? now
+            )
+            row.rating = i.rating.map { Int($0) }
+            modelContext.insert(row)
+            persisted = row
+        }
+
+        mutate(row, now)
+        row.updatedAt = now
+
         do {
             try modelContext.save()
         } catch {
             #if DEBUG
-            print("📤 [applyRating] failed to queue op: \(error)")
+            print("📤 [writeLocal] save failed: \(error)")
             #endif
-            return
+            return nil
         }
-
-        let api = appState.makeClient(serverURL: library.serverURL)
-        let service = SyncService(
-            api: api,
-            serverAccountID: account.id,
-            modelContainer: modelContext.container
-        )
-        Task {
-            try? await service.drainOutbox()
-        }
+        return account.id
     }
 
-    /// Toggle the favorite flag on the primary edition's interaction.
-    ///
-    /// First write-path to land on the outbox-first model: instead of
-    /// blocking on a direct PUT, the flip is applied to the local UI
-    /// immediately, queued as a `PendingSyncOp`, and pushed via
-    /// `POST /sync/apply` in the background. The next /sync/changes
-    /// drain confirms the canonical server state.
-    ///
-    /// Behaviour under offline: the optimistic flip stays in the UI for
-    /// the lifetime of the view, the op stays queued in SwiftData, and
-    /// `SyncService` retries on next launch / foreground transition.
-    /// The legacy `BookService.updateInteraction` PUT path is gone for
-    /// this field; other fields still use it pending their own rewires.
-    private func toggleFavorite() async {
-        guard let i = interaction else { return }
-        let newFavorite = !i.isFavorite
-        let now = Date()
-        let nowString = SyncTimestampFormatter.shared.string(from: now)
-
-        // Optimistic UI: apply locally so the user sees instant feedback.
-        interaction = i.with(isFavorite: newFavorite, updatedAt: nowString)
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-
-        // Resolve the account by the library's server URL so multi-server
-        // setups push the op to the right backend.
-        guard let entityID = UUID(uuidString: i.id),
-              let account = appState.accounts.first(where: { $0.url == library.serverURL })
-        else { return }
-
-        let op = PendingSyncOp.isFavorite(
-            serverAccountID: account.id,
-            entityID: entityID,
-            value: newFavorite,
-            updatedAt: now
-        )
-        modelContext.insert(op)
-        do {
-            try modelContext.save()
-        } catch {
-            #if DEBUG
-            print("📤 [toggleFavorite] failed to queue op: \(error)")
-            #endif
-            return
-        }
-
-        // Background drain. Failure is fine; the op stays queued and the
-        // next foreground sync retries.
+    private func kickDrain(accountID: UUID) {
         let api = appState.makeClient(serverURL: library.serverURL)
         let service = SyncService(
             api: api,
-            serverAccountID: account.id,
+            serverAccountID: accountID,
             modelContainer: modelContext.container
         )
-        Task {
-            try? await service.drainOutbox()
+        Task { try? await service.drainOutbox() }
+    }
+
+    /// Apply a new rating (or clear it) through the outbox.
+    /// Writes to PersistedInteraction first (source of truth), queues
+    /// a PendingSyncOp, then kicks a background drain.
+    private func applyRating(_ newRawRating: Int?) async {
+        guard let entityID = interaction.flatMap({ UUID(uuidString: $0.id) })
+        else { return }
+
+        let accountID = writeLocal { row, now in
+            row.rating = newRawRating
+            row.ratingUpdatedAt = now
         }
+        guard let accountID else { return }
+
+        let op = PendingSyncOp.rating(
+            serverAccountID: accountID,
+            entityID: entityID,
+            value: newRawRating
+        )
+        modelContext.insert(op)
+        try? modelContext.save()
+
+        kickDrain(accountID: accountID)
+    }
+
+    /// Toggle the favorite flag through the outbox. PersistedInteraction
+    /// is the source of truth; @Observable makes the UI update when we
+    /// mutate it. `BookService.updateInteraction` PUT is gone for this
+    /// field; other fields still use it pending their own rewires.
+    private func toggleFavorite() async {
+        guard let entityID = interaction.flatMap({ UUID(uuidString: $0.id) })
+        else { return }
+        let newFavorite = !displayIsFavorite
+
+        let accountID = writeLocal { row, now in
+            row.isFavorite = newFavorite
+            row.isFavoriteUpdatedAt = now
+        }
+        guard let accountID else { return }
+
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+
+        let op = PendingSyncOp.isFavorite(
+            serverAccountID: accountID,
+            entityID: entityID,
+            value: newFavorite
+        )
+        modelContext.insert(op)
+        try? modelContext.save()
+
+        kickDrain(accountID: accountID)
     }
 
     // MARK: - Hero
@@ -499,11 +508,26 @@ struct RedesignedBookDetailView: View {
         }
     }
 
-    /// Display rating pulled from the loaded interaction. The api stores
-    /// the half-star integer (1–10); divide by 2 for a 0.0–5.0 display.
+    /// Raw (1-10) rating from the local source of truth: SwiftData
+    /// first, fall back to the api-loaded interaction. Returns nil
+    /// when nothing has been rated yet.
+    private var displayRawRating: Int? {
+        if let p = persisted, let r = p.rating, r > 0 { return r }
+        if let raw = interaction?.rating, raw > 0 { return Int(raw) }
+        return nil
+    }
+
+    /// Display rating (0.0-5.0). Half-star scale, derived from the
+    /// raw 1-10 value the api stores.
     private var displayRating: Double? {
-        guard let raw = interaction?.rating, raw > 0 else { return nil }
+        guard let raw = displayRawRating else { return nil }
         return Double(raw) / 2.0
+    }
+
+    /// Favorite state from the local source of truth.
+    private var displayIsFavorite: Bool {
+        if let p = persisted { return p.isFavorite }
+        return interaction?.isFavorite ?? false
     }
 
     @ViewBuilder
@@ -908,18 +932,38 @@ struct RedesignedBookDetailView: View {
         selectedEditionID = primary?.id
 
         if let pe = primary {
+            // Local-first: read whatever PersistedInteraction we already
+            // have so the UI populates instantly with the last-known
+            // synced state. The api fetch + backfill below refreshes it.
+            if let editionID = UUID(uuidString: pe.id) {
+                let descriptor = FetchDescriptor<PersistedInteraction>(
+                    predicate: #Predicate { $0.bookEditionID == editionID }
+                )
+                persisted = (try? modelContext.fetch(descriptor))?.first
+            }
+
             let fetched = try? await BookService(client: client)
                 .interaction(libraryId: library.id, bookId: currentBook.id, editionId: pe.id)
             interaction = fetched
 
-            // Backfill the local SwiftData store so subsequent
-            // /sync/changes ops for this interaction can land instead
-            // of being skipped on "no local row". Best-effort; missing
-            // accountID just means we skip this hydration pass.
+            // Backfill into SwiftData. The helper guards against
+            // clobbering newer per-field timestamps (e.g., an outbox
+            // edit queued locally), so a stale api read can't undo a
+            // pending local change.
             if let dto = fetched,
                let account = appState.accounts.first(where: { $0.url == library.serverURL }) {
                 SyncBackfill.writeInteraction(dto, serverAccountID: account.id, in: modelContext)
                 try? modelContext.save()
+
+                // If persisted was nil before (first interaction with
+                // this edition), backfill just created the row; pick
+                // it up now so the @State holds the canonical reference.
+                if persisted == nil, let editionID = UUID(uuidString: pe.id) {
+                    let descriptor = FetchDescriptor<PersistedInteraction>(
+                        predicate: #Predicate { $0.bookEditionID == editionID }
+                    )
+                    persisted = (try? modelContext.fetch(descriptor))?.first
+                }
             }
         }
 
