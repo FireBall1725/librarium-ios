@@ -21,6 +21,16 @@ import SwiftUI
 /// recomputes. Same motivation as `RedesignedLibrariesViewModel` —
 /// inline `@State` + inline `func load()` ate URL requests on
 /// pull-to-refresh.
+/// One server's slice of the dashboard. Aggregated by `load` into the
+/// VM's merged arrays + summed stats.
+private struct PerAccountDashboard {
+    let serverURL: String
+    let serverName: String
+    let currentlyReading: [DashboardBook]
+    let recentlyFinished: [DashboardBook]
+    let stats: DashboardStats?
+}
+
 @Observable
 final class RedesignedHomeViewModel {
     var currentlyReading: [DashboardBook] = []
@@ -29,23 +39,110 @@ final class RedesignedHomeViewModel {
     var isLoading = true
     var error: String?
 
+    /// Fan-out load across every remote account. Each account contributes
+    /// its own dashboard slice; we tag each row with the source server so
+    /// covers + detail nav can route back to the right api. Lite accounts
+    /// have no api endpoints, so they're skipped — when their book store
+    /// lands (PR2) we'll layer a SwiftData-derived contribution onto the
+    /// same merged arrays.
     func load(appState: AppState) async {
         isLoading = true
         defer { isLoading = false }
-        guard let client = Self.primaryClient(appState: appState) else {
-            error = "No primary server selected."
+
+        let remotes = appState.accounts.filter { $0.kind == .remote && !$0.needsReauth }
+        guard !remotes.isEmpty else {
+            currentlyReading = []
+            recentlyFinished = []
+            stats = nil
+            // Don't surface an error for a Lite-only install — the empty
+            // home screen is the expected state, not a failure.
+            error = appState.accounts.isEmpty ? "No servers signed in." : nil
             return
         }
-        let svc = DashboardService(client: client)
-        async let cr = svc.currentlyReading()
-        async let rf = svc.recentlyFinished()
-        async let st = svc.stats()
 
-        // Only replace on real success — coercing CancellationError into
-        // nil/[] would blank the page on every refresh-task supersession.
-        if let value = try? await cr { currentlyReading = value }
-        if let value = try? await rf { recentlyFinished = value }
-        if let value = try? await st { stats = value }
+        var aggregatedReading: [DashboardBook] = []
+        var aggregatedFinished: [DashboardBook] = []
+        var aggregatedStats: DashboardStats? = nil
+        var anySucceeded = false
+
+        await withTaskGroup(of: PerAccountDashboard?.self) { group in
+            for account in remotes {
+                let url = account.url
+                let name = account.name
+                group.addTask {
+                    let client = await appState.makeClient(serverURL: url)
+                    let svc = DashboardService(client: client)
+                    async let cr = svc.currentlyReading()
+                    async let rf = svc.recentlyFinished()
+                    async let st = svc.stats()
+                    let crVal = try? await cr
+                    let rfVal = try? await rf
+                    let stVal = try? await st
+                    if crVal == nil && rfVal == nil && stVal == nil {
+                        return nil
+                    }
+                    return PerAccountDashboard(
+                        serverURL: url,
+                        serverName: name,
+                        currentlyReading: crVal ?? [],
+                        recentlyFinished: rfVal ?? [],
+                        stats: stVal
+                    )
+                }
+            }
+            for await chunk in group {
+                guard let chunk else { continue }
+                anySucceeded = true
+                aggregatedReading.append(contentsOf: chunk.currentlyReading.map { stamp($0, serverURL: chunk.serverURL, serverName: chunk.serverName) })
+                aggregatedFinished.append(contentsOf: chunk.recentlyFinished.map { stamp($0, serverURL: chunk.serverURL, serverName: chunk.serverName) })
+                aggregatedStats = Self.merge(aggregatedStats, chunk.stats)
+            }
+        }
+
+        // Sort by updatedAt descending so the most-recently-touched book
+        // wins the hero slot regardless of which server it lives on.
+        aggregatedReading.sort { $0.updatedAt > $1.updatedAt }
+        aggregatedFinished.sort { $0.updatedAt > $1.updatedAt }
+
+        if anySucceeded {
+            currentlyReading = aggregatedReading
+            recentlyFinished = aggregatedFinished
+            stats = aggregatedStats
+        }
+    }
+
+    private func stamp(_ book: DashboardBook, serverURL: String, serverName: String) -> DashboardBook {
+        var copy = book
+        copy.serverURL = serverURL
+        copy.serverName = serverName
+        return copy
+    }
+
+    /// Combine two `DashboardStats` payloads by summing every counter and
+    /// merging the monthly-reads series by month key. Nil acts as zero, so
+    /// the first chunk through becomes the running total.
+    private static func merge(_ acc: DashboardStats?, _ next: DashboardStats?) -> DashboardStats? {
+        switch (acc, next) {
+        case (nil, nil): return nil
+        case (let a?, nil): return a
+        case (nil, let b?): return b
+        case (let a?, let b?):
+            var months: [String: Int] = [:]
+            for row in a.monthlyReads { months[row.month, default: 0] += row.count }
+            for row in b.monthlyReads { months[row.month, default: 0] += row.count }
+            let merged = months
+                .map { MonthlyRead(month: $0.key, count: $0.value) }
+                .sorted { $0.month < $1.month }
+            return DashboardStats(
+                totalBooks: a.totalBooks + b.totalBooks,
+                booksRead: a.booksRead + b.booksRead,
+                booksReading: a.booksReading + b.booksReading,
+                booksAddedThisYear: a.booksAddedThisYear + b.booksAddedThisYear,
+                booksReadThisYear: a.booksReadThisYear + b.booksReadThisYear,
+                favoritesCount: a.favoritesCount + b.favoritesCount,
+                monthlyReads: merged
+            )
+        }
     }
 
     static func primaryAccount(appState: AppState) -> ServerAccount? {
@@ -437,21 +534,37 @@ struct RedesignedHomeView: View {
     // MARK: - Helpers
 
     private func coverURL(for book: DashboardBook) -> URL? {
-        guard let path = book.coverUrl, !path.isEmpty,
-              let account = RedesignedHomeViewModel.primaryAccount(appState: appState) else { return nil }
-        return URL(string: account.url + path)
+        guard let path = book.coverUrl, !path.isEmpty else { return nil }
+        // The book carries the server it came from; falling back to primary
+        // would silently cross-render covers when the user has multiple
+        // servers signed in.
+        let base = book.serverURL.isEmpty
+            ? RedesignedHomeViewModel.primaryAccount(appState: appState)?.url ?? ""
+            : book.serverURL
+        guard !base.isEmpty else { return nil }
+        return URL(string: base + path)
     }
 
     // MARK: - Detail navigation
 
     private func openDetail(for book: DashboardBook) {
-        pendingDetail = BookDetailRequest(libraryId: book.libraryId, libraryName: book.libraryName, bookId: book.bookId)
+        pendingDetail = BookDetailRequest(
+            serverURL: book.serverURL,
+            serverName: book.serverName,
+            libraryId: book.libraryId,
+            libraryName: book.libraryName,
+            bookId: book.bookId
+        )
     }
 
     private func loadDetail(request: BookDetailRequest) async {
         defer { pendingDetail = nil }
-        guard let account = RedesignedHomeViewModel.primaryAccount(appState: appState) else {
-            vm.error = "No primary server selected."
+        let resolvedURL = request.serverURL.isEmpty
+            ? RedesignedHomeViewModel.primaryAccount(appState: appState)?.url
+            : request.serverURL
+        guard let url = resolvedURL,
+              let account = appState.accounts.first(where: { $0.url == url }) else {
+            vm.error = "Couldn't find the server for this book."
             return
         }
         let client = appState.makeClient(serverURL: account.url)
@@ -475,6 +588,12 @@ struct RedesignedHomeView: View {
 /// Lives at file scope (internal) so Home, Search, and any future
 /// jumping-from-Profile flow can share the navigation pattern.
 struct BookDetailRequest: Equatable, Hashable {
+    /// Source server's URL — empty for navigation paths that already know
+    /// the active server (older call sites). `loadDetail` falls back to
+    /// the preferred-account URL when this is empty so we don't regress
+    /// single-server installs.
+    var serverURL: String = ""
+    var serverName: String = ""
     let libraryId: String
     let libraryName: String
     let bookId: String

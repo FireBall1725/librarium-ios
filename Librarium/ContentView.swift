@@ -88,7 +88,7 @@ struct ContentView: View {
         let accounts = appState.accounts
 
         await withTaskGroup(of: Void.self) { group in
-            for account in accounts {
+            for account in accounts where account.kind == .remote {
                 group.addTask {
                     let api = await appState.makeClient(serverURL: account.url)
                     let service = SyncService(

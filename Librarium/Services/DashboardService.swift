@@ -32,7 +32,18 @@ struct DashboardBook: Codable, Identifiable, Hashable {
     let readStatus: String
     let updatedAt: String
 
-    var id: String { bookId }
+    // Client-side only — stamped at fan-out time so each row carries its
+    // source server. Lets the dashboard render covers from the book's own
+    // server (rather than whichever account happens to be primary) and
+    // route detail navigation back to the right api.
+    var serverURL: String = ""
+    var serverName: String = ""
+
+    var id: String { "\(serverURL)|\(bookId)" }
+
+    enum CodingKeys: String, CodingKey {
+        case bookId, libraryId, libraryName, title, coverUrl, authors, readStatus, updatedAt
+    }
 }
 
 struct DashboardStats: Codable {
