@@ -43,6 +43,8 @@ struct RedesignedBookDetailView: View {
     @State private var showActionStub = false
     @State private var actionStubLabel = ""
     @State private var showRateSheet = false
+    @State private var showStatusSheet = false
+    @State private var showProgressSheet = false
     @State private var pendingSeriesID: String?
     @State private var loadedSeries: Series?
 
@@ -52,7 +54,7 @@ struct RedesignedBookDetailView: View {
         self._currentBook = State(initialValue: book)
     }
 
-    /// The primary edition — drives the hero meta line, the favorite
+    /// The primary edition — drives the hero meta line, the favourite
     /// toggle, and the user interaction (rating / status). Stable across
     /// edition-picker changes so the user-state shown above the picker
     /// doesn't shift when they're just inspecting another edition's
@@ -133,6 +135,28 @@ struct RedesignedBookDetailView: View {
                 Task { await applyRating(newRawRating) }
             }
         }
+        .sheet(isPresented: $showStatusSheet) {
+            RedesignedStatusSheet(
+                initialStatus: displayReadStatus
+            ) { newStatus in
+                Task { await applyReadStatus(newStatus) }
+            }
+        }
+        .sheet(isPresented: $showProgressSheet) {
+            RedesignedProgressSheet(
+                pageCount: primaryEdition?.pageCount,
+                initialPagesRead: currentPagesRead,
+                onSavePages: { newPages in
+                    Task { await applyProgress(pagesRead: newPages) }
+                },
+                onMarkFinished: {
+                    Task { await applyReadStatus("read") }
+                },
+                onSetPageCount: { newPageCount in
+                    await setEditionPageCount(newPageCount)
+                }
+            )
+        }
         .alert(actionStubLabel, isPresented: $showActionStub) {
             Button("OK") { }
         } message: {
@@ -178,7 +202,7 @@ struct RedesignedBookDetailView: View {
         HStack(spacing: 6) {
             navIconButton(systemName: "chevron.left") { dismiss() }
             Spacer()
-            // Bookmark = toggle favorite. Filled when on, outline when
+            // Bookmark = toggle favourite. Filled when on, outline when
             // off. Disabled until the primary edition (and therefore the
             // interaction) has loaded so the optimistic toggle has a
             // record to write to.
@@ -279,6 +303,137 @@ struct RedesignedBookDetailView: View {
         Task { try? await service.drainOutbox() }
     }
 
+    /// Save a new page_count onto the primary edition. Carries every
+    /// other edition field through unchanged because the api uses
+    /// CreateEditionRequest as a full-replacement body. Returns true
+    /// on success so the Progress sheet can swap from the page-count
+    /// entry field to the slider.
+    private func setEditionPageCount(_ newPageCount: Int) async -> Bool {
+        guard let edition = primaryEdition else { return false }
+        let client = appState.makeClient(serverURL: library.serverURL)
+        let body = CreateEditionRequest(
+            format: edition.format,
+            language: edition.language,
+            editionName: edition.editionName,
+            narrator: edition.narrator,
+            publisher: edition.publisher,
+            publishDate: edition.publishDate,
+            isbn10: edition.isbn10,
+            isbn13: edition.isbn13,
+            description: edition.description,
+            pageCount: newPageCount,
+            copyCount: edition.copyCount,
+            isPrimary: edition.isPrimary
+        )
+        do {
+            let updated = try await BookService(client: client).updateEdition(
+                libraryId: library.id,
+                bookId: currentBook.id,
+                editionId: edition.id,
+                body: body
+            )
+            if let idx = editions.firstIndex(where: { $0.id == updated.id }) {
+                editions[idx] = updated
+            }
+            return true
+        } catch {
+            #if DEBUG
+            print("📝 [setEditionPageCount] failed: \(error)")
+            #endif
+            return false
+        }
+    }
+
+    /// Apply a new reading-progress value through the outbox. The
+    /// progress field is a JSONB blob (`{pages_read?, percent?,
+    /// position?}` per the sync protocol); v1 only writes pages_read.
+    /// Pass nil to clear progress entirely.
+    private func applyProgress(pagesRead: Int?) async {
+        guard let entityID = interaction.flatMap({ UUID(uuidString: $0.id) })
+        else { return }
+
+        let opValue: SyncJSONValue?
+        let progressData: Data?
+        if let pages = pagesRead {
+            let dict: [String: SyncJSONValue] = ["pages_read": .int(pages)]
+            let value = SyncJSONValue.object(dict)
+            opValue = value
+            progressData = value.encodedJSON()
+        } else {
+            opValue = .null
+            progressData = nil
+        }
+
+        let accountID = writeLocal { row, now in
+            row.progressJSON = progressData
+            row.progressUpdatedAt = now
+        }
+        guard let accountID else { return }
+
+        let op = PendingSyncOp.progress(
+            serverAccountID: accountID,
+            entityID: entityID,
+            value: opValue
+        )
+        modelContext.insert(op)
+        try? modelContext.save()
+
+        kickDrain(accountID: accountID)
+
+        if let pages = pagesRead, let totalPages = primaryEdition?.pageCount, totalPages > 0 {
+            let pct = Int((Double(pages) / Double(totalPages) * 100.0).rounded())
+            TelemetryService.shared.send(
+                "progress_updated",
+                payload: ["pct_bucket": progressBucket(forPercent: pct)]
+            )
+        } else if pagesRead == nil {
+            TelemetryService.shared.send("progress_cleared")
+        }
+    }
+
+    /// Bucket the reading-progress percentage so the dashboard sees
+    /// engagement without inferring anything about a specific book.
+    private func progressBucket(forPercent pct: Int) -> String {
+        switch pct {
+        case ..<11: return "0-10"
+        case 11...25: return "11-25"
+        case 26...50: return "26-50"
+        case 51...75: return "51-75"
+        case 76...99: return "76-99"
+        default: return "100"
+        }
+    }
+
+    /// Apply a new read-status through the outbox. Same pattern as
+    /// toggleFavorite / applyRating: mutate PersistedInteraction first
+    /// (source of truth), enqueue a PendingSyncOp, kick a background
+    /// drain. Direct PUT to /my-interaction for this field is gone.
+    private func applyReadStatus(_ newStatus: String) async {
+        guard let entityID = interaction.flatMap({ UUID(uuidString: $0.id) })
+        else { return }
+
+        let accountID = writeLocal { row, now in
+            row.readStatus = newStatus
+            row.readStatusUpdatedAt = now
+        }
+        guard let accountID else { return }
+
+        let op = PendingSyncOp.readStatus(
+            serverAccountID: accountID,
+            entityID: entityID,
+            value: newStatus
+        )
+        modelContext.insert(op)
+        try? modelContext.save()
+
+        kickDrain(accountID: accountID)
+
+        TelemetryService.shared.send(
+            "status_set",
+            payload: ["status": newStatus]
+        )
+    }
+
     /// Apply a new rating (or clear it) through the outbox.
     /// Writes to PersistedInteraction first (source of truth), queues
     /// a PendingSyncOp, then kicks a background drain.
@@ -301,9 +456,18 @@ struct RedesignedBookDetailView: View {
         try? modelContext.save()
 
         kickDrain(accountID: accountID)
+
+        if let raw = newRawRating {
+            TelemetryService.shared.send(
+                "rating_set",
+                payload: ["stars_half": String(raw)]
+            )
+        } else {
+            TelemetryService.shared.send("rating_cleared")
+        }
     }
 
-    /// Toggle the favorite flag through the outbox. PersistedInteraction
+    /// Toggle the favourite flag through the outbox. PersistedInteraction
     /// is the source of truth; @Observable makes the UI update when we
     /// mutate it. `BookService.updateInteraction` PUT is gone for this
     /// field; other fields still use it pending their own rewires.
@@ -329,6 +493,11 @@ struct RedesignedBookDetailView: View {
         try? modelContext.save()
 
         kickDrain(accountID: accountID)
+
+        TelemetryService.shared.send(
+            "favourite_toggled",
+            payload: ["enabled": newFavorite ? "true" : "false"]
+        )
     }
 
     // MARK: - Hero
@@ -342,7 +511,7 @@ struct RedesignedBookDetailView: View {
                 height: 195,
                 title: currentBook.title,
                 author: primaryAuthor,
-                readStatus: interaction?.readStatus
+                readStatus: displayReadStatus
             )
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
@@ -452,9 +621,12 @@ struct RedesignedBookDetailView: View {
     @ViewBuilder
     private var metaPills: some View {
         HStack(spacing: 6) {
-            if let pill = statusPill {
-                pillView(text: pill.text, fg: pill.fg, bg: pill.bg, dot: pill.dot)
+            Button {
+                showStatusSheet = true
+            } label: {
+                pillView(text: statusPill.text, fg: statusPill.fg, bg: statusPill.bg, dot: statusPill.dot)
             }
+            .buttonStyle(.plain)
             if !currentBook.genres.isEmpty {
                 pillView(
                     text: currentBook.genres.first!.name,
@@ -491,20 +663,22 @@ struct RedesignedBookDetailView: View {
 
     private struct StatusPill { let text: String; let fg: Color; let bg: Color; let dot: Color? }
 
-    /// Status pill driven by the loaded interaction. Currently `Read`
-    /// (green dot), `Reading` (indigo dot), `Want to read` (gold dot),
-    /// `Unread` (subtle). No interaction → nothing surfaces.
-    private var statusPill: StatusPill? {
-        guard let i = interaction else { return nil }
-        switch i.readStatus {
+    /// Status pill driven by the local source of truth (PersistedInteraction
+    /// first, then the api-loaded DTO). Always renders a pill so the user
+    /// has a tap target; the muted "Unread" variant covers the not-yet-rated
+    /// case.
+    private var statusPill: StatusPill {
+        switch displayReadStatus {
         case "read":
             return StatusPill(text: "Read", fg: Theme.Colors.good, bg: Color(hex: 0x7bd6a8, opacity: 0.18), dot: Theme.Colors.good)
         case "reading":
             return StatusPill(text: "Reading", fg: Theme.Colors.accentStrong, bg: Theme.Colors.accentSoft, dot: Theme.Colors.accent)
         case "want_to_read", "want-to-read":
             return StatusPill(text: "Want to read", fg: Theme.Colors.gold, bg: Color(hex: 0xf3c971, opacity: 0.18), dot: Theme.Colors.gold)
+        case "did_not_finish":
+            return StatusPill(text: "Did not finish", fg: Theme.Colors.bad, bg: Color(hex: 0xff8a8a, opacity: 0.18), dot: Theme.Colors.bad)
         default:
-            return nil
+            return StatusPill(text: "Unread", fg: Theme.Colors.appText3, bg: Color.white.opacity(0.05), dot: nil)
         }
     }
 
@@ -524,10 +698,29 @@ struct RedesignedBookDetailView: View {
         return Double(raw) / 2.0
     }
 
-    /// Favorite state from the local source of truth.
+    /// Favourite state from the local source of truth.
     private var displayIsFavorite: Bool {
         if let p = persisted { return p.isFavorite }
         return interaction?.isFavorite ?? false
+    }
+
+    /// Read-status from the local source of truth. Defaults to
+    /// "unread" so the pill always has something to render.
+    private var displayReadStatus: String {
+        if let p = persisted { return p.readStatus }
+        return interaction?.readStatus ?? "unread"
+    }
+
+    /// Pages read pulled from the local progress JSON blob. nil when
+    /// nothing's been tracked yet or the stored shape doesn't carry
+    /// a pages_read key (e.g., percent-only ebook readers).
+    private var currentPagesRead: Int? {
+        guard let p = persisted, let data = p.progressJSON else { return nil }
+        guard let parsed = try? JSONDecoder().decode(SyncJSONValue.self, from: data),
+              case .object(let dict) = parsed,
+              let pagesValue = dict["pages_read"],
+              case .int(let pages) = pagesValue else { return nil }
+        return pages
     }
 
     @ViewBuilder
@@ -561,7 +754,7 @@ struct RedesignedBookDetailView: View {
     @ViewBuilder
     private var quickActions: some View {
         HStack(spacing: 10) {
-            qa(icon: "book.fill", label: "Re-read") { stub("Re-read") }
+            qa(icon: "book.pages.fill", label: "Progress") { showProgressSheet = true }
             qa(icon: "star.fill", label: "Rate")    { showRateSheet = true }
             qa(icon: "bubble.left.fill", label: "Review") { stub("Review") }
             qa(icon: "arrow.up.arrow.down.circle.fill", label: "Loan") {
@@ -936,6 +1129,11 @@ struct RedesignedBookDetailView: View {
         // the stat-grid contents below, not the user-state shown above.
         let primary = editions.first(where: { $0.isPrimary }) ?? editions.first
         selectedEditionID = primary?.id
+
+        TelemetryService.shared.send(
+            "book_detail_opened",
+            payload: ["media_type": currentBook.mediaType.isEmpty ? "unknown" : currentBook.mediaType]
+        )
 
         if let pe = primary {
             // Local-first: read whatever PersistedInteraction we already
