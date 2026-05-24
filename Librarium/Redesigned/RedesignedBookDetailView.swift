@@ -857,8 +857,19 @@ struct RedesignedBookDetailView: View {
         selectedEditionID = primary?.id
 
         if let pe = primary {
-            interaction = try? await BookService(client: client)
+            let fetched = try? await BookService(client: client)
                 .interaction(libraryId: library.id, bookId: currentBook.id, editionId: pe.id)
+            interaction = fetched
+
+            // Backfill the local SwiftData store so subsequent
+            // /sync/changes ops for this interaction can land instead
+            // of being skipped on "no local row". Best-effort; missing
+            // accountID just means we skip this hydration pass.
+            if let dto = fetched,
+               let account = appState.accounts.first(where: { $0.url == library.serverURL }) {
+                SyncBackfill.writeInteraction(dto, serverAccountID: account.id, in: modelContext)
+                try? modelContext.save()
+            }
         }
 
         await loadActiveLoan()
