@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 struct CreateLibrarySheet: View {
     let onCreated: (Library) -> Void
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var description = ""
@@ -14,13 +16,18 @@ struct CreateLibrarySheet: View {
     @State private var isSaving = false
     @State private var error: String?
 
+    /// True when every signed-in account is Lite-mode local. Drives the
+    /// SwiftData write-path below and hides server-only affordances
+    /// (public toggle, keep-offline toggle) that don't apply locally.
+    private var isLocalOnly: Bool { appState.isLocalOnly }
+
     private let offlineStore = LibraryOfflineStore.shared
 
     var body: some View {
         NavigationStack {
             Form {
                 libraryFields
-                offlineSection
+                if !isLocalOnly { offlineSection }
                 if let err = error {
                     Section { Text(err).foregroundStyle(.red).font(.caption) }
                 }
@@ -42,7 +49,9 @@ struct CreateLibrarySheet: View {
         Section("Library Details") {
             TextField("Name", text: $name)
             TextField("Description (optional)", text: $description)
-            Toggle("Public library", isOn: $isPublic)
+            if !isLocalOnly {
+                Toggle("Public library", isOn: $isPublic)
+            }
         }
     }
 
@@ -58,6 +67,10 @@ struct CreateLibrarySheet: View {
 
     private func save() async {
         isSaving = true; error = nil; defer { isSaving = false }
+        if isLocalOnly, let account = appState.accounts.first(where: { $0.kind == .local }) {
+            saveLocal(account: account)
+            return
+        }
         do {
             var lib = try await LibraryService(client: appState.makeClient())
                 .create(name: name, description: description, isPublic: isPublic)
@@ -75,5 +88,25 @@ struct CreateLibrarySheet: View {
             }
             onCreated(lib); dismiss()
         } catch { self.error = error.localizedDescription }
+    }
+
+    private func saveLocal(account: ServerAccount) {
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedDesc = description.trimmingCharacters(in: .whitespaces)
+        let row = PersistedLibrary(
+            serverAccountID: account.id,
+            name: trimmedName,
+            libraryDescription: trimmedDesc,
+            isPublic: false
+        )
+        modelContext.insert(row)
+        do {
+            try modelContext.save()
+        } catch {
+            self.error = error.localizedDescription
+            return
+        }
+        onCreated(row.toLibrary(serverAccountID: account.id, accountName: account.name))
+        dismiss()
     }
 }

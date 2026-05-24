@@ -183,6 +183,8 @@ struct RedesignedSearchView: View {
                         searchRow(bookResult: result)
                             .onTapGesture {
                                 pendingDetail = BookDetailRequest(
+                                    serverURL: result.library.serverURL,
+                                    serverName: result.library.serverName,
                                     libraryId: result.library.id,
                                     libraryName: result.library.name,
                                     bookId: result.book.id
@@ -222,8 +224,17 @@ struct RedesignedSearchView: View {
             ),
             title: result.book.title,
             subtitle: bookSubtitle(for: result, author: primaryAuthor),
+            serverName: showServerLabels ? result.library.serverName : nil,
             badge: bookBadge(for: result.book)
         )
+    }
+
+    /// True when the user has more than one account on this device — only
+    /// then is the per-row server label informative. A single-server user
+    /// already knows where every result came from, so we keep the row
+    /// clean for the common case.
+    private var showServerLabels: Bool {
+        appState.accounts.count > 1
     }
 
     @ViewBuilder
@@ -240,6 +251,7 @@ struct RedesignedSearchView: View {
             ),
             title: "\(result.series.name) (series)",
             subtitle: seriesSubtitle(for: result.series),
+            serverName: showServerLabels ? result.library.serverName : nil,
             badge: ("Series", Theme.Colors.appText2, Color.white.opacity(0.06))
         )
     }
@@ -263,6 +275,7 @@ struct RedesignedSearchView: View {
             ),
             title: contributor.name,
             subtitle: "Author",
+            serverName: nil,
             badge: ("Author", Theme.Colors.appText2, Color.white.opacity(0.06))
         )
     }
@@ -272,6 +285,7 @@ struct RedesignedSearchView: View {
         thumb: AnyView,
         title: String,
         subtitle: String,
+        serverName: String?,
         badge: (text: String, fg: Color, bg: Color)?
     ) -> some View {
         VStack(spacing: 0) {
@@ -286,6 +300,15 @@ struct RedesignedSearchView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Theme.Colors.appText3)
                         .lineLimit(1)
+                    if let serverName, !serverName.isEmpty {
+                        Text(serverName)
+                            .font(Theme.Fonts.label(9))
+                            .tracking(1.2)
+                            .textCase(.uppercase)
+                            .foregroundStyle(Theme.Colors.appText3)
+                            .lineLimit(1)
+                            .padding(.top, 1)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if let badge {
@@ -377,7 +400,9 @@ struct RedesignedSearchView: View {
 
     private func loadDetail(request: BookDetailRequest) async {
         defer { pendingDetail = nil }
-        guard let account = primaryAccount() else { return }
+        let resolvedURL = request.serverURL.isEmpty ? primaryAccount()?.url : request.serverURL
+        guard let url = resolvedURL,
+              let account = appState.accounts.first(where: { $0.url == url }) else { return }
         let client = appState.makeClient(serverURL: account.url)
         do {
             let book: Book = try await BookService(client: client).get(libraryId: request.libraryId, bookId: request.bookId)
@@ -405,15 +430,22 @@ struct BookSearchResult: Identifiable, Hashable {
     let book: Book
     let library: Library
 
-    var id: String { "\(library.id)|\(book.id)" }
+    // Include the source server in the identity. Cloned-DB setups (the
+    // same library/book UUIDs on two servers) would otherwise collapse
+    // into one ForEach row, picking whichever server's stamp lost the
+    // race — visible to the user as "the server label is wrong".
+    var id: String { "\(library.serverURL)|\(library.id)|\(book.id)" }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.book.id == rhs.book.id && lhs.library.id == rhs.library.id
+        lhs.book.id == rhs.book.id
+            && lhs.library.id == rhs.library.id
+            && lhs.library.serverURL == rhs.library.serverURL
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(book.id)
         hasher.combine(library.id)
+        hasher.combine(library.serverURL)
     }
 }
 
@@ -421,20 +453,31 @@ struct SeriesSearchResult: Identifiable, Hashable {
     let series: Series
     let library: Library
 
-    var id: String { "\(library.id)|\(series.id)" }
+    var id: String { "\(library.serverURL)|\(library.id)|\(series.id)" }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.series.id == rhs.series.id && lhs.library.id == rhs.library.id
+        lhs.series.id == rhs.series.id
+            && lhs.library.id == rhs.library.id
+            && lhs.library.serverURL == rhs.library.serverURL
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(series.id)
         hasher.combine(library.id)
+        hasher.combine(library.serverURL)
     }
 }
 
 enum SearchSegment: Hashable {
     case all, books, series, authors
+}
+
+/// One server's slice of a cross-server search. Aggregated by the
+/// VM into the merged results arrays.
+private struct PerAccountSearch {
+    let books: [BookSearchResult]
+    let series: [SeriesSearchResult]
+    let contributors: [ContributorResult]
 }
 
 // MARK: - View model
@@ -451,9 +494,10 @@ final class RedesignedSearchViewModel {
     var isLoading = false
     var stubAlert: String?
 
-    /// Runs against the primary account. Cross-type fan-out: each library
-    /// contributes books + series; contributors come from the server-wide
-    /// endpoint so they're per-server (not per-library).
+    /// Runs against every remote account in parallel. Each account
+    /// contributes its own books / series / contributors slice; we merge
+    /// the slices and let the per-result library carry server context
+    /// downstream (cover URLs, detail nav, mutations).
     func search(query: String, appState: AppState) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -463,34 +507,58 @@ final class RedesignedSearchViewModel {
             return
         }
 
-        guard let account = Self.primaryAccount(appState: appState) else { return }
-        let client = appState.makeClient(serverURL: account.url)
+        let remotes = appState.accounts.filter { $0.kind == .remote && !$0.needsReauth }
+        guard !remotes.isEmpty else {
+            bookResults = []
+            seriesResults = []
+            contributorResults = []
+            return
+        }
 
         isLoading = true
         defer { isLoading = false }
 
-        // Fetch the user's libraries on this server so we know what to
-        // fan out across. Cached results aren't re-fetched here yet —
-        // search hits live every keystroke.
-        let libraries: [Library]
-        do {
-            var libs = try await LibraryService(client: client).list()
-            for i in libs.indices {
-                libs[i].serverURL = account.url
-                libs[i].serverName = account.name
+        var allBooks: [BookSearchResult] = []
+        var allSeries: [SeriesSearchResult] = []
+        var allContribs: [ContributorResult] = []
+
+        await withTaskGroup(of: PerAccountSearch.self) { group in
+            for account in remotes {
+                let url = account.url
+                let name = account.name
+                group.addTask {
+                    let client = await appState.makeClient(serverURL: url)
+                    let libraries: [Library]
+                    do {
+                        var libs = try await LibraryService(client: client).list()
+                        for i in libs.indices {
+                            libs[i].serverURL = url
+                            libs[i].serverName = name
+                        }
+                        libraries = libs
+                    } catch {
+                        return PerAccountSearch(books: [], series: [], contributors: [])
+                    }
+                    async let books = Self.fanOutBooks(client: client, libraries: libraries, query: trimmed)
+                    async let series = Self.fanOutSeries(client: client, libraries: libraries, query: trimmed)
+                    async let contribs = Self.searchContributors(client: client, query: trimmed)
+                    return PerAccountSearch(
+                        books: (try? await books) ?? [],
+                        series: (try? await series) ?? [],
+                        contributors: (try? await contribs) ?? []
+                    )
+                }
             }
-            libraries = libs
-        } catch {
-            return
+            for await chunk in group {
+                allBooks.append(contentsOf: chunk.books)
+                allSeries.append(contentsOf: chunk.series)
+                allContribs.append(contentsOf: chunk.contributors)
+            }
         }
 
-        async let books = Self.fanOutBooks(client: client, libraries: libraries, query: trimmed)
-        async let series = Self.fanOutSeries(client: client, libraries: libraries, query: trimmed)
-        async let contributors = Self.searchContributors(client: client, query: trimmed)
-
-        if let value = try? await books { bookResults = value }
-        if let value = try? await series { seriesResults = value }
-        if let value = try? await contributors { contributorResults = value }
+        bookResults = allBooks.sorted { $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending }
+        seriesResults = allSeries.sorted { $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending }
+        contributorResults = allContribs
     }
 
     private static func fanOutBooks(client: APIClient, libraries: [Library], query: String) async throws -> [BookSearchResult] {

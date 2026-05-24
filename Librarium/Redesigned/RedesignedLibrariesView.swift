@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// Redesigned post-auth library picker — mockup card #2.
@@ -35,7 +36,7 @@ final class RedesignedLibrariesViewModel {
     /// silently dropping that server's libraries.
     var unreachableServerURLs: Set<String> = []
 
-    func load(appState: AppState) async {
+    func load(appState: AppState, modelContainer: ModelContainer) async {
         isLoading = true
         error = nil
         defer { isLoading = false }
@@ -52,8 +53,30 @@ final class RedesignedLibrariesViewModel {
         var anyCancelled = false
         var unreachable: Set<String> = []
 
+        // Local (Lite-mode) accounts query SwiftData synchronously rather than
+        // going through the api task group — there's no server to be slow or
+        // unreachable, so we resolve them up front. Crucially we do NOT flip
+        // `anySucceeded` here: that flag gates "replace the visible list",
+        // and mixing local-fetch success with a flaky remote fan-out would
+        // blank previously-loaded remote libraries when the network blips.
+        // Pure-local installs bypass `anySucceeded` further down.
+        for account in accounts where account.kind == .local {
+            let context = ModelContext(modelContainer)
+            let accountID = account.id
+            let descriptor = FetchDescriptor<PersistedLibrary>(
+                predicate: #Predicate { $0.serverAccountID == accountID && $0.deletedAt == nil },
+                sortBy: [SortDescriptor(\.createdAt)]
+            )
+            if let rows = try? context.fetch(descriptor) {
+                let libs = rows.map { $0.toLibrary(serverAccountID: accountID, accountName: account.name) }
+                collected.append(contentsOf: libs)
+            }
+        }
+
+        let hasRemote = accounts.contains(where: { $0.kind == .remote })
+
         await withTaskGroup(of: (String, [Library]?, Error?).self) { group in
-            for account in accounts {
+            for account in accounts where account.kind == .remote {
                 group.addTask {
                     do {
                         let client = await appState.makeClient(serverURL: account.url)
@@ -98,11 +121,12 @@ final class RedesignedLibrariesViewModel {
         // Only replace on success. Cancellation isn't surfaced as an
         // error (it's noise from refresh-task supersession) — see
         // `plans/ios-redesign/PLAN.md` for context on why this VM
-        // refactor exists in the first place.
-        if anySucceeded {
+        // refactor exists in the first place. Pure-local installs
+        // have nothing to "fail", so every load is a replace.
+        if anySucceeded || !hasRemote {
             libraries = collected.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }
-        if !anySucceeded, !anyCancelled, let firstError {
+        if hasRemote, !anySucceeded, !anyCancelled, let firstError {
             error = firstError
         }
 
@@ -114,7 +138,7 @@ final class RedesignedLibrariesViewModel {
     /// rendering placeholder rectangles. Title + author are captured so
     /// missing covers fall back to a generated jacket.
     private func loadCovers(appState: AppState) async {
-        let libs = libraries
+        let libs = libraries.filter { !$0.serverURL.hasPrefix("local://") }
         await withTaskGroup(of: (String, [CoverBook]).self) { group in
             for lib in libs {
                 group.addTask {
@@ -157,6 +181,7 @@ final class RedesignedLibrariesViewModel {
 struct RedesignedLibrariesView: View {
     let onSelect: (Library) -> Void
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
 
     @State private var vm = RedesignedLibrariesViewModel()
     @State private var reauthAccount: ServerAccount?
@@ -178,14 +203,14 @@ struct RedesignedLibrariesView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(.hidden, for: .navigationBar)
-            .task { await vm.load(appState: appState) }
-            .refreshable { await vm.load(appState: appState) }
+            .task { await vm.load(appState: appState, modelContainer: modelContext.container) }
+            .refreshable { await vm.load(appState: appState, modelContainer: modelContext.container) }
             .sheet(item: $reauthAccount) { account in
                 ReauthSheet(account: account)
             }
             .sheet(isPresented: $showCreateLibrary) {
                 CreateLibrarySheet { _ in
-                    Task { await vm.load(appState: appState) }
+                    Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
                 }
             }
         }
@@ -202,7 +227,7 @@ struct RedesignedLibrariesView: View {
     private var serverStatusBanners: some View {
         let needsReauth = appState.accounts.filter { $0.needsReauth }
         let offline = appState.accounts.filter {
-            !$0.needsReauth && vm.unreachableServerURLs.contains($0.url)
+            $0.kind == .remote && !$0.needsReauth && vm.unreachableServerURLs.contains($0.url)
         }
         if !needsReauth.isEmpty || !offline.isEmpty {
             VStack(spacing: 8) {
@@ -225,7 +250,7 @@ struct RedesignedLibrariesView: View {
                         bg: Color(hex: 0xff8a8a, opacity: 0.10),
                         actionLabel: "Retry"
                     ) {
-                        Task { await vm.load(appState: appState) }
+                        Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
                     }
                 }
             }
@@ -305,16 +330,20 @@ struct RedesignedLibrariesView: View {
             // Mockup .nav-icon-btn — 38pt glass circle, indigo accent.
             // Single action: create a new library on the active server.
             // Server management lives on the redesigned Profile (card 8).
-            Button { showCreateLibrary = true } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.accent)
-                    .frame(width: 38, height: 38)
-                    .background(Color.white.opacity(0.08), in: Circle())
-                    .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+            // Hidden for Lite-only installs — those accounts auto-create
+            // a single library on signup and don't support more.
+            if !appState.isLocalOnly {
+                Button { showCreateLibrary = true } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.accent)
+                        .frame(width: 38, height: 38)
+                        .background(Color.white.opacity(0.08), in: Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                }
+                .disabled(appState.accounts.isEmpty)
+                .padding(.bottom, 4)
             }
-            .disabled(appState.accounts.isEmpty)
-            .padding(.bottom, 4)
         }
         .padding(.horizontal, 18)
         .padding(.top, 12)
@@ -513,7 +542,7 @@ private struct LibraryCard: View {
     private var pills: some View {
         HStack(spacing: 6) {
             if isPrimary {
-                pill(text: "Primary", textColor: Theme.Colors.accentStrong, bg: Theme.Colors.accentSoft)
+                pill(text: "Preferred", textColor: Theme.Colors.accentStrong, bg: Theme.Colors.accentSoft)
             }
             if library.isPublic {
                 pill(text: "Public", textColor: Theme.Colors.gold, bg: Color(hex: 0xf3c971, opacity: 0.15))

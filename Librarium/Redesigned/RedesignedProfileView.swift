@@ -6,7 +6,7 @@ import SwiftUI
 /// Redesigned Profile — mockup card #8.
 ///
 /// Profile head (avatar + name + admin badge) → reading stats strip →
-/// Servers list (status + per-server library count, tap to switch primary,
+/// Servers list (status + per-server library count, tap to switch preferred,
 /// "Add a server" row at the bottom) → App section (legacy account
 /// management for advanced changes, sign out, version row).
 ///
@@ -52,7 +52,11 @@ struct RedesignedProfileView: View {
         }
         .sheet(item: $manageAccount) { account in
             NavigationStack {
-                ProfileView(account: account)
+                if account.kind == .local {
+                    LiteAccountSettingsView(account: account)
+                } else {
+                    ProfileView(account: account)
+                }
             }
         }
         .sheet(isPresented: $showTelemetrySettings) {
@@ -241,7 +245,7 @@ struct RedesignedProfileView: View {
                             .foregroundStyle(Theme.Colors.appText)
                             .lineLimit(1)
                         if isPrimary {
-                            Text("PRIMARY")
+                            Text("PREFERRED")
                                 .font(.system(size: 9, weight: .bold))
                                 .tracking(0.6)
                                 .foregroundStyle(Theme.Colors.accentStrong)

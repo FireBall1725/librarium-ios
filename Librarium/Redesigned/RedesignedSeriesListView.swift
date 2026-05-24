@@ -204,19 +204,29 @@ struct RedesignedSeriesListView: View {
 
 // MARK: - View model
 
+/// One server's slice of the cross-server series list. Aggregated by
+/// `load` into the flat sorted list the view consumes.
+private struct PerAccountSeries {
+    let libraryCount: Int
+    let entries: [SeriesListEntry]
+}
+
 struct SeriesListEntry: Identifiable, Hashable {
     let series: Series
     let library: Library
 
-    var id: String { "\(library.id)|\(series.id)" }
+    var id: String { "\(library.serverURL)|\(library.id)|\(series.id)" }
 
     static func == (lhs: SeriesListEntry, rhs: SeriesListEntry) -> Bool {
-        lhs.series.id == rhs.series.id && lhs.library.id == rhs.library.id
+        lhs.series.id == rhs.series.id
+            && lhs.library.id == rhs.library.id
+            && lhs.library.serverURL == rhs.library.serverURL
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(series.id)
         hasher.combine(library.id)
+        hasher.combine(library.serverURL)
     }
 }
 
@@ -228,39 +238,62 @@ final class RedesignedSeriesListViewModel {
     /// account — otherwise the per-row library badge is redundant.
     var showLibraryBadge = false
 
+    /// Fan-out across every remote account. Each account contributes its
+    /// own libraries → series; we flatten across all servers and sort by
+    /// name. Lite accounts have no api so they're skipped; their local
+    /// series will get layered in when the SwiftData book store lands.
     func load(appState: AppState) async {
         isLoading = true
         defer { isLoading = false }
-        guard let account = primaryAccount(appState: appState) else { return }
-        let client = appState.makeClient(serverURL: account.url)
 
-        // Per-library list — fanned out so a slow library doesn't block
-        // the rest. Each library hit lists its series; we then flatten
-        // everything into a single sorted list keyed by series name.
-        var libs: [Library]
-        do {
-            libs = try await LibraryService(client: client).list()
-            for i in libs.indices {
-                libs[i].serverURL = account.url
-                libs[i].serverName = account.name
-            }
-        } catch {
+        let remotes = appState.accounts.filter { $0.kind == .remote && !$0.needsReauth }
+        guard !remotes.isEmpty else {
+            entries = []
+            showLibraryBadge = false
             return
         }
-        showLibraryBadge = libs.count > 1
 
         var collected: [SeriesListEntry] = []
-        await withTaskGroup(of: (Library, [Series]).self) { group in
-            for lib in libs {
+        var totalLibCount = 0
+
+        await withTaskGroup(of: PerAccountSeries.self) { group in
+            for account in remotes {
+                let url = account.url
+                let name = account.name
                 group.addTask {
-                    let s = (try? await SeriesService(client: client).list(libraryId: lib.id)) ?? []
-                    return (lib, s)
+                    let client = await appState.makeClient(serverURL: url)
+                    var libs: [Library]
+                    do {
+                        libs = try await LibraryService(client: client).list()
+                        for i in libs.indices {
+                            libs[i].serverURL = url
+                            libs[i].serverName = name
+                        }
+                    } catch {
+                        return PerAccountSeries(libraryCount: 0, entries: [])
+                    }
+                    var slice: [SeriesListEntry] = []
+                    await withTaskGroup(of: (Library, [Series]).self) { inner in
+                        for lib in libs {
+                            inner.addTask {
+                                let s = (try? await SeriesService(client: client).list(libraryId: lib.id)) ?? []
+                                return (lib, s)
+                            }
+                        }
+                        for await (lib, list) in inner {
+                            slice.append(contentsOf: list.map { SeriesListEntry(series: $0, library: lib) })
+                        }
+                    }
+                    return PerAccountSeries(libraryCount: libs.count, entries: slice)
                 }
             }
-            for await (lib, list) in group {
-                collected.append(contentsOf: list.map { SeriesListEntry(series: $0, library: lib) })
+            for await chunk in group {
+                totalLibCount += chunk.libraryCount
+                collected.append(contentsOf: chunk.entries)
             }
         }
+
+        showLibraryBadge = totalLibCount > 1
         entries = collected.sorted {
             $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending
         }

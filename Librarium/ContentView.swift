@@ -88,7 +88,7 @@ struct ContentView: View {
         let accounts = appState.accounts
 
         await withTaskGroup(of: Void.self) { group in
-            for account in accounts {
+            for account in accounts where account.kind == .remote {
                 group.addTask {
                     // Rotate the access token first if it's near expiry
                     // so the api requests below don't 401 and trigger
