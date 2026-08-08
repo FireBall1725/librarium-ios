@@ -1,0 +1,42 @@
+name: CodeQL
+
+# Free on public repos, and this one is public. Every other public repo in the
+# fleet runs it; a repo without it is an oversight rather than a decision.
+#
+# Swift analysis builds the project under instrumentation on a macOS runner,
+# which is slow and bills at ten times the Linux rate, so this runs weekly and
+# on main rather than on every pull request.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: macos-26
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo xcode-select -s /Applications/Xcode_26.4.app
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: swift
+      - name: Build
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Librarium.xcodeproj \
+            -scheme Librarium \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - uses: github/codeql-action/analyze@v3
