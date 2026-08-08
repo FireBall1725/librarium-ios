@@ -1,41 +1,47 @@
 name: CI
 
+# The jobs live in FireBall1725/workflows so every Swift repo runs the same
+# ones. This is an Xcode project rather than a SwiftPM package, so it passes
+# its own build and test commands.
+
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.4.app
-
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Build (Debug, simulator)
-        run: |
-          set -euo pipefail
-          xcodebuild \
-            -project Librarium.xcodeproj \
-            -scheme Librarium \
-            -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
-            -skipPackagePluginValidation \
-            CODE_SIGNING_ALLOWED=NO \
-            build
-
-      - name: Test (LibrariumTests on iPhone 17 Pro Max simulator)
-        run: |
-          set -euo pipefail
-          xcodebuild test \
-            -project Librarium.xcodeproj \
-            -scheme Librarium \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max,OS=latest' \
-            -skipPackagePluginValidation \
-            CODE_SIGNING_ALLOWED=NO
+  ci:
+    uses: FireBall1725/workflows/.github/workflows/ci-swift.yml@v1
+    with:
+      # Pinned, not macos-latest: this has to match the SDK the app ships
+      # against, and a floating runner would change that under us.
+      runs-on: macos-26
+      xcode-path: /Applications/Xcode_26.4.app
+      lint-paths: Librarium LibrariumTests
+      # Annotate, do not fail. The tree predates the shared .swift-format and
+      # bringing it into line reformats 103 files, which would be a miserable
+      # rebase for anything in flight. Flip this to true in the same PR that
+      # does the reformat, once the current feature branches have landed.
+      lint-strict: false
+      build-command: |
+        set -euo pipefail
+        xcodebuild \
+          -project Librarium.xcodeproj \
+          -scheme Librarium \
+          -configuration Debug \
+          -destination 'generic/platform=iOS Simulator' \
+          -skipPackagePluginValidation \
+          CODE_SIGNING_ALLOWED=NO \
+          build
+      test-command: |
+        set -euo pipefail
+        xcodebuild test \
+          -project Librarium.xcodeproj \
+          -scheme Librarium \
+          -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max,OS=latest' \
+          -skipPackagePluginValidation \
+          CODE_SIGNING_ALLOWED=NO
