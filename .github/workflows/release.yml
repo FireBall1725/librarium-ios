@@ -70,83 +70,24 @@ jobs:
           echo "next_dev=$NEXT_DEV" >> "$GITHUB_OUTPUT"
           echo "Releasing version: $VERSION"
 
-      # The pbxproj has two MARKETING_VERSION lines (Debug and Release). Both get set to
-      # the release version at tag time; after tagging, Debug bumps back to the next -dev.
-      - name: Update MARKETING_VERSION (release — both configs)
+      # Nothing in the source tree carries a version string, which is how
+      # every other repo works. This used to sed MARKETING_VERSION into
+      # project.pbxproj, commit it, tag, then commit again to put Debug back
+      # to a -dev value.
+      #
+      # None of that was load-bearing. testflight.yml passes
+      # MARKETING_VERSION to xcodebuild at archive time, so the archive never
+      # reads the committed value; the tag already records the number.
+      #
+      # Removing it also removes the reason this workflow had to push to main,
+      # which is what lets main be protected without a bypass or a PAT.
+      - name: Tag the release
+        if: ${{ inputs.dry-run == false }}
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
-          sed -i -E "s/MARKETING_VERSION = [^;]+;/MARKETING_VERSION = ${VERSION};/g" Librarium.xcodeproj/project.pbxproj
-          grep -n "MARKETING_VERSION" Librarium.xcodeproj/project.pbxproj
-
-      - name: Commit + tag release
-        if: ${{ inputs.dry-run == false }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          git add Librarium.xcodeproj/project.pbxproj
-          git commit -m "release: ${VERSION}"
           git tag "v${VERSION}"
-
-      # After tagging, only the Debug config goes back to -dev. Release stays pinned at
-      # the numeric version until the next release workflow run.
-      - name: Bump Debug MARKETING_VERSION to next -dev
-        if: ${{ inputs.dry-run == false }}
-        run: |
-          set -euo pipefail
-          NEXT_DEV="${{ steps.version.outputs.next_dev }}"
-          python3 - <<PY
-          import re, pathlib, sys
-          p = pathlib.Path("Librarium.xcodeproj/project.pbxproj")
-          text = p.read_text()
-
-          # An XCBuildConfiguration's opening line looks like
-          #   <UUID> /* Debug */ = {
-          # and the object contains a nested "buildSettings = { ... };" block,
-          # so we can't split on the first "};" — we need proper brace matching.
-          # A pbxproj typically has multiple Debug blocks (one per target/project),
-          # so iterate and rewrite MARKETING_VERSION wherever it appears.
-          total = 0
-          out = []
-          cursor = 0
-          for m in re.finditer(r'/\* Debug \*/ = \{', text):
-              start = m.start()
-              depth = 0
-              end = None
-              for i in range(m.end() - 1, len(text)):
-                  c = text[i]
-                  if c == '{':
-                      depth += 1
-                  elif c == '}':
-                      depth -= 1
-                      if depth == 0:
-                          end = i + 1
-                          break
-              if end is None:
-                  sys.exit("Debug block never closes")
-              block = text[start:end]
-              new_block, n = re.subn(
-                  r'MARKETING_VERSION\s*=\s*[^;]+;',
-                  'MARKETING_VERSION = "${NEXT_DEV}";',
-                  block,
-              )
-              total += n
-              out.append(text[cursor:start])
-              out.append(new_block)
-              cursor = end
-          out.append(text[cursor:])
-          if total == 0:
-              sys.exit("MARKETING_VERSION not found in any Debug block")
-          p.write_text("".join(out))
-          PY
-          grep -n "MARKETING_VERSION" Librarium.xcodeproj/project.pbxproj
-          git add Librarium.xcodeproj/project.pbxproj
-          git commit -m "chore: bump Debug to ${NEXT_DEV}"
-
-      - name: Push commits and tag
-        if: ${{ inputs.dry-run == false }}
-        run: |
-          git push origin HEAD:main
-          git push origin "v${{ steps.version.outputs.version }}"
+          git push origin "v${VERSION}"
 
       - name: Create GitHub Release
         if: ${{ inputs.dry-run == false }}
