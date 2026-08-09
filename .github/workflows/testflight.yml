@@ -36,7 +36,10 @@ jobs:
             exit 1
           fi
           echo "MARKETING_VERSION=$VERSION" >> $GITHUB_ENV
-          echo "BUILD_NUMBER=$(date -u +%d%m%y)" >> $GITHUB_ENV
+          # %y%m%d, not %d%m%y. Apple requires the build number to increase within a
+          # marketing version, and day-first is not monotonic: 24 May gave 240526
+          # and 8 August gives 080826, which is lower. Year-first always sorts.
+          echo "BUILD_NUMBER=$(date -u +%y%m%d)" >> $GITHUB_ENV
 
       # Import the distribution certificate into a temporary keychain so
       # xcodebuild can sign the archive without touching the system keychain.
