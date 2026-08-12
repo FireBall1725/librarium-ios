@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      # Screenshot mirroring commits to the issue-forge-assets branch.
+      contents: write
 
     steps:
       - name: Run IssueForge
@@ -45,5 +47,8 @@ jobs:
           # under load, and anything outside the window is never picked up.
           # Deduplication absorbs the overlap.
           interval-hours: 24
+          # Apple's screenshot links expire after about a week. Copy them to the
+          # issue-forge-assets branch so the picture is still there at triage.
+          mirror-assets: true
           # Manual runs default to dry; the schedule always files for real.
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
