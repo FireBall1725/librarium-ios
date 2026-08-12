@@ -1,0 +1,49 @@
+name: IssueForge
+
+on:
+  schedule:
+    # Every 6 hours, offset off the hour so it doesn't queue behind the fleet's
+    # other scheduled jobs.
+    - cron: "13 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Log what would be filed without creating anything"
+        type: boolean
+        default: true
+
+# Two overlapping runs would each read the issue list before either writes to
+# it, and file the same feedback twice.
+concurrency:
+  group: issue-forge
+  cancel-in-progress: false
+
+jobs:
+  forge:
+    name: File TestFlight feedback as issues
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Run IssueForge
+        uses: FireBall1725/IssueForge@v3
+        with:
+          # Resolved to the numeric Apple ID at runtime, so there's no app ID to
+          # keep in sync in a repo variable.
+          bundle-id: ca.fireball1725.librarium-ios
+          asc-issuer-id: ${{ secrets.ASC_ISSUER_ID }}
+          asc-key-id: ${{ secrets.ASC_KEY_ID }}
+          asc-private-key: ${{ secrets.ASC_PRIVATE_KEY }}
+          # `reviews` stays off until the app is on the App Store: the endpoint
+          # returns nothing for a TestFlight-only app, and a Developer-role key
+          # gets a 403 on it, which would show as a failed source every run.
+          # `diagnostics` stays off until the beta has enough devices to produce
+          # hang signatures.
+          sources: testflight-crashes,testflight-feedback,submission
+          # Wider than the 6-hour cron on purpose. Scheduled workflows fire late
+          # under load, and anything outside the window is never picked up.
+          # Deduplication absorbs the overlap.
+          interval-hours: 24
+          # Manual runs default to dry; the schedule always files for real.
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
