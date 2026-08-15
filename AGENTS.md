@@ -101,12 +101,29 @@ conversation, so raise it in an issue first.
 
 ## Things that will bite you
 
-- **Never hand-edit `MARKETING_VERSION` in `project.pbxproj`.** The release
-  workflow rewrites it, commits, tags, then bumps Debug back. A version change
-  in a feature diff will be asked out of the PR.
+- **Never hand-edit `MARKETING_VERSION` in `project.pbxproj`.** It stays at
+  `0.0.0-dev` in source. The release workflow computes `YY.M.R`, tags the
+  commit, and passes the version to `xcodebuild` at archive time, so nothing
+  writes a version string back into the repo. A version change in a feature
+  diff will be asked out of the PR.
 - **Never edit `CHANGELOG.md`.** Release notes are generated from PR titles.
-- **`project.pbxproj` conflicts are ugly.** Adding files reorders it. Keep file
-  additions in their own commit where you can, and rebase rather than merge.
+- **A new test file does nothing until you register it.** The app target uses a
+  file-system-synchronized group, so a new `.swift` file under `Librarium/` is
+  picked up with no project edit. The **test** target does not: `LibrariumTests`
+  lists its files explicitly in `project.pbxproj`, so an unregistered test is
+  skipped silently and the run still reports success. After adding one, check
+  the suite actually ran rather than trusting the green tick:
+
+  ```bash
+  xcodebuild test ... | grep "Test Suite '.*' passed"
+  ```
+
+  Registering it by hand means four entries: a `PBXBuildFile`, a
+  `PBXFileReference`, the group's `children`, and the target's `Sources` build
+  phase. Adding the file through Xcode does all four for you.
+- **`project.pbxproj` conflicts are ugly.** Editing it reorders unrelated
+  entries. Keep project-file changes in their own commit where you can, and
+  rebase rather than merge.
 - **A cover write path with no sheet writes nothing.** Flows that hand back a
   captured image need the presenting view to actually present something; this
   has silently dropped covers before.
