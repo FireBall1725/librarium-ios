@@ -15,9 +15,17 @@ struct ContentView: View {
         ZStack {
             mainContent
 
-            if showSplash, let user = appState.currentUser {
-                SplashView(user: user) { showSplash = false }
-                    .zIndex(1)
+            // Shown on every cold launch, signed in or not. It used to be
+            // gated on having a user, so a fresh install went straight to
+            // the account picker with no branding at all.
+            if showSplash {
+                BrandSplashView(
+                    displayName: appState.currentUser?.displayName
+                ) {
+                    showSplash = false
+                }
+                .zIndex(1)
+                .transition(.opacity)
             }
         }
         .task(id: appState.isAuthenticated) {
