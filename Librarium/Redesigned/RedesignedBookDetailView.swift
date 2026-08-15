@@ -37,6 +37,7 @@ struct RedesignedBookDetailView: View {
     @State private var coverCacheBuster: Int = 0
 
     @State private var showEdit = false
+    @State private var showRefreshMetadata = false
     @State private var showDeleteConfirm = false
     @State private var showClearCoverConfirm = false
     @State private var showScanner = false
@@ -67,6 +68,19 @@ struct RedesignedBookDetailView: View {
     /// only. Falls back to primary while the picker initialises.
     private var selectedEdition: BookEdition? {
         editions.first(where: { $0.id == selectedEditionID }) ?? primaryEdition
+    }
+
+    /// Lite libraries carry a synthetic `local://` URL and have no api
+    /// behind them, so every write has to go through SwiftData instead.
+    private var isLocalLibrary: Bool {
+        library.serverURL.hasPrefix("local://")
+    }
+
+    /// The account this library belongs to, matched the same way
+    /// `writeLocal` does. Every SwiftData row is keyed on it, so a write
+    /// without it would land under the wrong account.
+    private var localAccountID: UUID? {
+        appState.accounts.first(where: { $0.url == library.serverURL })?.id
     }
 
     var body: some View {
@@ -124,10 +138,53 @@ struct RedesignedBookDetailView: View {
         .preference(key: LogicalTabPreferenceKey.self, value: AppTab.library)
         .task { await loadDetail() }
         .sheet(isPresented: $showEdit) {
-            AddEditBookSheet(library: library, book: currentBook) { updated in
-                currentBook = updated
+            if isLocalLibrary, let accountID = localAccountID {
+                LiteEditBookSheet(
+                    library: library,
+                    book: currentBook,
+                    serverAccountID: accountID
+                ) { updated in
+                    currentBook = updated
+                    // The book row is state we hold directly, but
+                    // editions are not: they load in .task, which does
+                    // not re-fire when a sheet dismisses. Without this,
+                    // an edited ISBN or publisher stays stale until the
+                    // user backs out and reopens the book.
+                    Task { await loadDetail() }
+                }
+            } else {
+                AddEditBookSheet(library: library, book: currentBook) { updated in
+                    currentBook = updated
+                    Task { await loadDetail() }
+                }
             }
         }
+        .sheet(isPresented: $showRefreshMetadata) {
+            if let accountID = localAccountID {
+                LiteRefreshMetadataSheet(
+                    library: library,
+                    book: currentBook,
+                    serverAccountID: accountID
+                ) { updated in
+                    currentBook = updated
+                    // The cover is an AsyncImage keyed on the URL, and a
+                    // refresh often keeps the same URL while pointing at
+                    // a different image. Bump the buster so it re-reads.
+                    coverCacheBuster += 1
+                    // Refresh writes edition fields too (ISBN, publisher,
+                    // pages), which live in `editions` rather than on the
+                    // book row.
+                    Task { await loadDetail() }
+                }
+            }
+        }
+        // Deliberately no `.liteLibraryDidChange` listener here. This
+        // view posts that notification itself on every favourite,
+        // rating, status and progress write, so listening made it
+        // reload in response to its own writes — re-firing the
+        // `book_detail_opened` telemetry event each time and inflating
+        // that metric. The edit and refresh sheets reload explicitly
+        // through their callbacks, which is the only case that needs it.
         .sheet(isPresented: $showRateSheet) {
             RedesignedRateSheet(
                 initialRawRating: displayRawRating
@@ -212,17 +269,35 @@ struct RedesignedBookDetailView: View {
             .opacity(primaryEdition == nil ? 0.4 : 1.0)
 
             Menu {
-                // Edit / scan-cover / clear-cover still call the api
-                // under the hood; hide them for Lite books until the
-                // SwiftData write path is wired up for those flows.
-                if !library.serverURL.hasPrefix("local://") {
-                    Button { showEdit = true } label: { Label("Edit", systemImage: "pencil") }
+                // Edit routes to whichever sheet can actually write:
+                // AddEditBookSheet saves through the api, LiteEditBookSheet
+                // through SwiftData. Scan-cover and clear-cover stay
+                // api-only — a Lite cover needs local image storage that
+                // does not exist yet.
+                Button { showEdit = true } label: { Label("Edit", systemImage: "pencil") }
+                if isLocalLibrary {
+                    // Lite has no server-side enrichment, so this is the
+                    // only way a local book ever gains a description or
+                    // a cover it did not arrive with. With every source
+                    // switched off there is nowhere to look, so say that
+                    // rather than opening a sheet that can only fail.
+                    if LiteMetadataSettings.hasActiveProvider {
+                        Button { showRefreshMetadata = true } label: {
+                            Label("Refresh metadata", systemImage: "arrow.clockwise")
+                        }
+                    } else {
+                        Button {} label: {
+                            Label("No metadata sources enabled", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(true)
+                    }
+                } else {
                     Button { showScanner = true } label: { Label("Scan cover", systemImage: "camera.viewfinder") }
                     if let p = currentBook.coverUrl, !p.isEmpty {
                         Button("Clear cover", role: .destructive) { showClearCoverConfirm = true }
                     }
-                    Divider()
                 }
+                Divider()
                 Button(role: .destructive) { showDeleteConfirm = true } label: {
                     Label("Delete", systemImage: "trash")
                 }
@@ -264,6 +339,15 @@ struct RedesignedBookDetailView: View {
         guard let editionID = (primaryEdition.flatMap { UUID(uuidString: $0.id) }),
               let account = appState.accounts.first(where: { $0.url == library.serverURL })
         else { return nil }
+
+        // Synthesising defaults is a Lite-only affordance: there is no
+        // server row to fetch first, so "no interaction yet" genuinely
+        // means unread/unrated. On a remote book the same state means
+        // the fetch has not landed (offline, server down, or a tap
+        // during loadDetail), and inventing an unread row would both
+        // show the wrong status and never reach the outbox, since there
+        // is no api interaction id to enqueue against.
+        guard isLocalLibrary || interaction != nil || persisted != nil else { return nil }
 
         let now = Date()
         let row: PersistedInteraction
@@ -1336,7 +1420,32 @@ struct RedesignedBookDetailView: View {
                 }
             ))
             shelfRows?.forEach { context.delete($0) }
+
+            // The interaction row is keyed on the edition, not the book,
+            // so it survives the deletes above and would sit orphaned
+            // forever. `editions` is already loaded on this view, and
+            // PersistedBookEditions stores one payload blob rather than
+            // per-edition rows, so this is the cheapest source of ids.
+            let editionIDs = Set(editions.compactMap { UUID(uuidString: $0.id) })
+            if !editionIDs.isEmpty {
+                let interactions = try? context.fetch(FetchDescriptor<PersistedInteraction>(
+                    predicate: #Predicate<PersistedInteraction> {
+                        editionIDs.contains($0.bookEditionID)
+                    }
+                ))
+                interactions?.forEach { context.delete($0) }
+            }
             try? context.save()
+
+            // Nothing else re-reads SwiftData on its own: popping back
+            // does not re-fire the books grid's .task, so without this
+            // the deleted book stays on the grid, the home dashboard,
+            // and the libraries card count until the app restarts.
+            NotificationCenter.default.post(
+                name: .liteLibraryDidChange,
+                object: nil,
+                userInfo: ["libraryID": library.id]
+            )
         } else {
             let client = appState.makeClient(serverURL: library.serverURL)
             try? await BookService(client: client).delete(libraryId: library.id, bookId: currentBook.id)
