@@ -7,7 +7,7 @@ import SwiftUI
 /// Redesigned Home — mockup card #7.
 ///
 /// Sections (top to bottom):
-/// - Greeting header (date eyebrow + "Good evening, Adaléa")
+/// - Greeting header (date eyebrow, greeting, and a one-line shelf summary)
 /// - Now-reading hero card (cover + title + author + progress bar)
 /// - Stats card (12-month read total + sparkline)
 /// - "Pick up where you left off" horizontal strip (other in-progress
@@ -453,9 +453,7 @@ struct RedesignedHomeView: View {
                     .tracking(1.0)
                     .textCase(.uppercase)
                     .foregroundStyle(Theme.Colors.appText3)
-                Text(greeting)
-                    .font(Theme.Fonts.pageTitle)
-                    .foregroundStyle(Theme.Colors.appText)
+                greetingLockup
             }
             Spacer()
             // Profile avatar — tap to open the redesigned profile sheet.
@@ -480,20 +478,13 @@ struct RedesignedHomeView: View {
         let display = primary?.user.displayName.isEmpty == false
             ? primary!.user.displayName
             : (primary?.user.username ?? "")
-        let initial = String(display.prefix(1)).uppercased()
-        ZStack {
-            LinearGradient(
-                colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            Text(initial.isEmpty ? "?" : initial)
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.white)
-        }
-        .frame(width: 40, height: 40)
-        .clipShape(Circle())
-        .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
-        .shadow(color: Theme.Colors.accent.opacity(0.4), radius: 6, y: 2)
+        // Seeded on the account id, not the name: renaming yourself
+        // should not repaint your avatar.
+        GeneratedAvatar(
+            seed: primary?.id.uuidString ?? "librarium",
+            initial: String(display.prefix(1)).uppercased(),
+            size: 40
+        )
     }
 
     private var dateEyebrow: String {
@@ -502,19 +493,76 @@ struct RedesignedHomeView: View {
         return df.string(from: Date())
     }
 
-    private var greeting: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        let timeOfDay: String
-        switch hour {
-        case 5..<12:  timeOfDay = "morning"
-        case 12..<17: timeOfDay = "afternoon"
-        case 17..<22: timeOfDay = "evening"
-        default:      timeOfDay = "night"
+    /// Greeting as a two-line lockup rather than one sentence.
+    ///
+    /// "Good afternoon, Konstantinos" on one line either wrapped at a
+    /// comma or ran into the avatar, and both looked like an accident.
+    /// Splitting it puts the fixed half on a small line and the name on
+    /// a large one, so the width that varies is the width that has a
+    /// line to itself.
+    ///
+    /// The two sit tight together on purpose: negative spacing overlaps
+    /// the serif's generous line box so they read as one lockup instead
+    /// of two stacked labels.
+    /// Greeting plus a line of substance.
+    ///
+    /// The name is gone. It was the only part whose width varied, so it
+    /// was the only part that could wrap badly or run into the avatar,
+    /// and it was decoration rather than information. What replaces it
+    /// says something true about the shelf, which is what the app is
+    /// for.
+    @ViewBuilder
+    private var greetingLockup: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(timeOfDayGreeting)
+                .font(Theme.Fonts.pageTitle)
+                .foregroundStyle(Theme.Colors.appText)
+
+            if let line = shelfSummary {
+                Text(line)
+                    .font(Theme.Fonts.ui(13, weight: .medium))
+                    .foregroundStyle(Theme.Colors.appText3)
+            }
         }
-        let name = appState.currentUser?.displayName.split(separator: " ").first.map(String.init)
-            ?? appState.currentUser?.username
-            ?? ""
-        return name.isEmpty ? "Good \(timeOfDay)" : "Good \(timeOfDay), \(name)"
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The stat line under the greeting, or nil when there is nothing
+    /// worth saying.
+    ///
+    /// Counts come from whatever the dashboard already loaded, so this
+    /// costs no extra work. A brand-new library has no numbers to show
+    /// and gets a prompt instead of a row of zeros, which would read as
+    /// the app being broken rather than the shelf being empty.
+    private var shelfSummary: String? {
+        guard let stats = vm.stats else { return nil }
+
+        var parts: [String] = []
+        if stats.booksReadThisYear > 0 {
+            parts.append("\(stats.booksReadThisYear) read this year")
+        }
+        if stats.booksReading > 0 {
+            parts.append("\(stats.booksReading) in progress")
+        }
+
+        if parts.isEmpty {
+            // Nothing read and nothing started. Say what the shelf holds
+            // if it holds anything, otherwise point at the next step.
+            return stats.totalBooks > 0
+                ? "\(stats.totalBooks) \(stats.totalBooks == 1 ? "book" : "books") on the shelf"
+                : "Scan a barcode to add your first book"
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var timeOfDayGreeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12:  return "Good morning"
+        case 12..<17: return "Good afternoon"
+        case 17..<22: return "Good evening"
+        default:      return "Good night"
+        }
     }
 
     // MARK: - Now reading

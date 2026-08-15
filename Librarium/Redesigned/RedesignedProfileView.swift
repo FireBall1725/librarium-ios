@@ -112,18 +112,13 @@ struct RedesignedProfileView: View {
         let initial = String(displayName.prefix(1)).uppercased()
 
         HStack(alignment: .center, spacing: 14) {
-            ZStack {
-                LinearGradient(
-                    colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-                Text(initial.isEmpty ? "?" : initial)
-                    .font(Theme.Fonts.display(28, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 64, height: 64)
-            .clipShape(Circle())
-            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
+            // Same generator as the home header, seeded the same way, so
+            // the two never show different colours for one account.
+            GeneratedAvatar(
+                seed: primary?.id.uuidString ?? "librarium",
+                initial: initial,
+                size: 64
+            )
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(displayName.isEmpty ? "Sign in to see your profile" : displayName)
@@ -254,6 +249,11 @@ struct RedesignedProfileView: View {
         let isPrimary = appState.primaryAccountID == account.id
         let status = vm.status(for: account)
 
+        // Two hit areas rather than one: the row selects, the pencil
+        // edits. Managing a server used to be reachable only by tapping
+        // the row that was already preferred, or by long-pressing, and
+        // neither announces itself.
+        HStack(spacing: 0) {
         Button {
             // Tap to make primary; long-press / swipe is for management.
             // Switching primary is the most common server action and the
@@ -301,6 +301,20 @@ struct RedesignedProfileView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+
+            Button {
+                manageAccount = account
+            } label: {
+                Image(systemName: "pencil")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.appText3)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 6)
+            .accessibilityLabel("Manage \(account.name)")
+        }
         // The server list is a VStack, not a List, so `.swipeActions`
         // is silently dead here. Use a long-press context menu instead
         // so the affordance is discoverable, and put Manage/Remove
