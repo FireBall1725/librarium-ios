@@ -16,6 +16,10 @@ import SwiftUI
 /// from the legacy view are deferred to later passes.
 struct RedesignedBooksView: View {
     let library: Library
+    /// Set by the shell when the scanner asks to open a book that is
+    /// already on this shelf. Cleared once pushed so backing out of the
+    /// detail does not immediately push it again.
+    var openBookID: Binding<String?> = .constant(nil)
     @Environment(AppState.self) private var appState
     @Environment(\.libraryBack) private var onBack
     @Environment(\.modelContext) private var modelContext
@@ -24,6 +28,7 @@ struct RedesignedBooksView: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var showAdd = false
     @State private var showLiteManualAdd = false
+    @State private var showLocalStorageNote = false
     @State private var selectedBook: Book?
     @State private var offlineStore = LibraryOfflineStore.shared
 
@@ -99,11 +104,23 @@ struct RedesignedBooksView: View {
             // have written, then bail out before the api branch below.
             if isLocalLibrary {
                 loadLiteBooks()
+                pushPendingBook()
                 return
             }
-            guard vm.books.isEmpty else { return }
+            guard vm.books.isEmpty else {
+                pushPendingBook()
+                return
+            }
             await loadBooks()
+            // Covers the case where the books were already loaded by the
+            // time the pending id arrived, so neither onChange fires.
+            pushPendingBook()
         }
+        // Push the book the scanner asked for, once the grid has it.
+        // Runs on both the id arriving and the books finishing loading,
+        // since either can happen second.
+        .onChange(of: openBookID.wrappedValue) { _, _ in pushPendingBook() }
+        .onChange(of: vm.books.count) { _, _ in pushPendingBook() }
         // Re-read SwiftData whenever the sync state ticks forward so the
         // user watches books fill in instead of staring at an empty page
         // until the sync completes. Cheap fetch; sync emits a handful of
@@ -177,12 +194,12 @@ struct RedesignedBooksView: View {
         .sheet(isPresented: $showLiteManualAdd) {
             if let account = appState.accounts.first(where: { $0.url == library.serverURL && $0.kind == .local }) {
                 LiteManualAddSheet(library: library, serverAccountID: account.id) {
-                    // Re-read from SwiftData so the just-added book lands
-                    // in the grid without a full sync round-trip.
-                    let cache = BookCache(modelContainer: modelContext.container)
-                    let cached = cache.books(for: library)
-                    vm.books = cached
-                    vm.total = cached.count
+                    // Go through the same loader the rest of the view
+                    // uses. Assigning the raw cache result here skipped
+                    // the search and media-type filters and the sort, so
+                    // adding a book while a search was active replaced
+                    // the filtered grid with the whole library.
+                    loadLiteBooks()
                 }
             }
         }
@@ -296,7 +313,13 @@ struct RedesignedBooksView: View {
     private var offlineToggle: some View {
         let state = offlineStore.bookCacheStates[library.clientKey]
         Button {
-            guard !isLocalLibrary else { return }
+            // On a Lite library there is nothing to toggle, but a dead
+            // button in a row of working ones reads as broken. Say what
+            // the icon means instead of ignoring the tap.
+            guard !isLocalLibrary else {
+                showLocalStorageNote = true
+                return
+            }
             let enabled = offlineStore.isEnabled(for: library.clientKey)
             let container = modelContext.container
             offlineStore.setEnabled(!enabled, for: library.clientKey, modelContainer: container)
@@ -325,11 +348,26 @@ struct RedesignedBooksView: View {
                 .background(Color.white.opacity(0.08), in: Circle())
                 .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
         }
-        // Lite libraries are inherently offline — the user can't toggle
-        // them off, but we keep the icon visible so the indicator state
-        // stays consistent across remote + local libraries.
-        .disabled(isLocalLibrary)
-        .opacity(isLocalLibrary ? 0.7 : 1.0)
+        // Lite libraries are inherently offline, so the icon is a status
+        // badge rather than a toggle. It stays enabled and at full
+        // opacity because tapping it now explains itself.
+        .popover(isPresented: $showLocalStorageNote) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Stored on this phone", systemImage: "iphone.gen3")
+                    .font(.subheadline.weight(.semibold))
+                Text("This library lives entirely on your device, so there's nothing to sync and no server copy to fall back on.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(16)
+            // A definite width, not maxWidth. The popover proposes an
+            // unbounded width, so the text lays out as one long line and
+            // maxWidth only clips the frame around it. Fixing the width
+            // gives the text something to wrap against.
+            .frame(width: 280, alignment: .leading)
+            .presentationCompactAdaptation(.popover)
+        }
     }
 
     private func offlineIconName(state: BookCacheState?) -> String {
@@ -533,6 +571,35 @@ struct RedesignedBooksView: View {
     /// search is intentionally skipped here: it would require reading
     /// EditionCache for every book on every keystroke and the on-device
     /// scan flow is the more natural way to find a book by ISBN.
+    /// Push the scanner's book once it is in the loaded set. Clearing
+    /// the binding first means backing out of the detail returns to the
+    /// grid instead of pushing straight back in.
+    private func pushPendingBook() {
+        guard let wanted = openBookID.wrappedValue else { return }
+
+        if let book = vm.books.first(where: { $0.id == wanted }) {
+            openBookID.wrappedValue = nil
+            selectedBook = book
+            return
+        }
+
+        // Not in the loaded set. A Lite library loads whole, so a miss
+        // there is a genuine miss. A remote grid paginates, though, so
+        // the book may exist on the server and simply not be on the
+        // first page — waiting for it would mean waiting for the user
+        // to scroll to a book they asked to open. Fetch it directly.
+        guard !isLocalLibrary else { return }
+        openBookID.wrappedValue = nil
+        let serverURL = library.serverURL
+        let libraryID = library.id
+        Task {
+            let client = appState.makeClient(serverURL: serverURL)
+            guard let book = try? await BookService(client: client)
+                .get(libraryId: libraryID, bookId: wanted) else { return }
+            selectedBook = book
+        }
+    }
+
     private func loadLiteBooks() {
         let cache = BookCache(modelContainer: modelContext.container)
         let cached = cache.books(for: library)

@@ -333,6 +333,8 @@ struct RedesignedLibrariesView: View {
     @State private var vm = RedesignedLibrariesViewModel()
     @State private var reauthAccount: ServerAccount?
     @State private var showCreateLibrary = false
+    /// Coalesces bursts of Lite write notifications into one reload.
+    @State private var liteReloadTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -358,8 +360,17 @@ struct RedesignedLibrariesView: View {
             // Refresh the libraries grid so the just-added book bumps the
             // count and slides into the fanned cover stack without the
             // user pulling-to-refresh.
+            // Coalesced: a rating drag or a run of status taps posts
+            // this on every write, and vm.load fans out to the remote
+            // dashboard APIs. Without the delay one slider gesture fired
+            // a burst of full network reloads.
             .onReceive(NotificationCenter.default.publisher(for: .liteLibraryDidChange)) { _ in
-                Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
+                liteReloadTask?.cancel()
+                liteReloadTask = Task {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else { return }
+                    await vm.load(appState: appState, modelContainer: modelContext.container)
+                }
             }
             .sheet(item: $reauthAccount) { account in
                 ReauthSheet(account: account)

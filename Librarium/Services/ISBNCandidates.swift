@@ -58,9 +58,11 @@ enum ISBNCandidates {
         let digits = upc.compactMap { $0.wholeNumberValue }
         guard digits.count == 12 else { return nil }
         // UPC-A on books usually has the ISBN-10 body in positions
-        // 1..9 (after the leading manufacturer prefix digit). We take
-        // the first 9 digits as the body to keep this generic.
-        let body = "978" + String(upc.prefix(9))
+        // 1..9, i.e. after the leading number-system digit. This used to
+        // take `prefix(9)`, which includes that leading digit and so
+        // shifted every derived ISBN by one place: the heuristic never
+        // matched anything and only cost an extra round-trip.
+        let body = "978" + String(upc.dropFirst().prefix(9))
         return body + String(ean13CheckDigit(for: body))
     }
 

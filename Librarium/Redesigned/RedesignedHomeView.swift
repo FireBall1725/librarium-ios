@@ -37,6 +37,10 @@ final class RedesignedHomeViewModel {
     var currentlyReading: [DashboardBook] = []
     var recentlyFinished: [DashboardBook] = []
     var stats: DashboardStats?
+    /// Remote-only stats, kept apart from the displayed `stats` so the
+    /// Lite merge always adds to a clean remote total instead of to a
+    /// number that already includes the last merge.
+    private var remoteStats: DashboardStats?
     var isLoading = true
     var error: String?
 
@@ -72,6 +76,7 @@ final class RedesignedHomeViewModel {
         guard !remotes.isEmpty else {
             currentlyReading = liteSlice.currentlyReading
             recentlyFinished = liteSlice.recentlyFinished
+            remoteStats = nil
             stats = liteSlice.stats
             // Don't surface an error for a Lite-only install — the empty
             // home screen is the expected state, not a failure.
@@ -126,6 +131,7 @@ final class RedesignedHomeViewModel {
         if anySucceeded {
             currentlyReading = aggregatedReading
             recentlyFinished = aggregatedFinished
+            remoteStats = aggregatedStats
             stats = aggregatedStats
         }
         // Always fold in the Lite slice — even when no remote came back
@@ -217,13 +223,23 @@ final class RedesignedHomeViewModel {
     /// lists (remote results sort by `updatedAt`; Lite doesn't carry
     /// that field so just append), and sums the stats counters when
     /// both halves have data.
+    /// Fold the Lite rows into whatever the remote paths produced.
+    ///
+    /// Drops any Lite rows already present before appending. The remote
+    /// paths only overwrite `currentlyReading` when a server actually
+    /// answered, so on a Lite-only install, or any refresh where no
+    /// remote came back, the arrays still hold the previous run's rows
+    /// and a plain append added a second copy of every local book. Same
+    /// for stats, which were being merged into an already-merged total
+    /// and so climbed on every refresh.
     private func mergeLite(_ slice: DashboardSlice) {
-        guard !slice.currentlyReading.isEmpty
-            || !slice.recentlyFinished.isEmpty
-            || slice.stats != nil else { return }
+        currentlyReading.removeAll { $0.serverURL.hasPrefix("local://") }
+        recentlyFinished.removeAll { $0.serverURL.hasPrefix("local://") }
         currentlyReading.append(contentsOf: slice.currentlyReading)
         recentlyFinished.append(contentsOf: slice.recentlyFinished)
-        stats = Self.merge(stats, slice.stats)
+        // Always rebuilt from the remote total rather than the current
+        // displayed value, so re-merging cannot double-count.
+        stats = Self.merge(remoteStats, slice.stats)
     }
 
     private struct DashboardSlice {
@@ -264,6 +280,8 @@ final class RedesignedHomeViewModel {
 
         currentlyReading = reading
         recentlyFinished = finished
+        // Cache-only path has no server aggregation to show.
+        remoteStats = nil
         stats = nil
         error = nil
     }
@@ -347,6 +365,8 @@ struct RedesignedHomeView: View {
     @State private var pendingDetail: BookDetailRequest?
     @State private var loadedDetail: BookDetailLoaded?
     @State private var showProfile = false
+    /// Coalesces bursts of Lite write notifications into one reload.
+    @State private var liteReloadTask: Task<Void, Never>?
     @State private var reauthAccount: ServerAccount?
 
     var body: some View {
@@ -393,8 +413,17 @@ struct RedesignedHomeView: View {
             // Lite writes (scan or manual add) bump the home dashboard so
             // a freshly-added "reading" book lands on the tile row without
             // a manual pull-to-refresh.
+            // Coalesced: a rating drag or a run of status taps posts
+            // this on every write, and vm.load fans out to the remote
+            // dashboard APIs. Without the delay one slider gesture fired
+            // a burst of full network reloads.
             .onReceive(NotificationCenter.default.publisher(for: .liteLibraryDidChange)) { _ in
-                Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
+                liteReloadTask?.cancel()
+                liteReloadTask = Task {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else { return }
+                    await vm.load(appState: appState, modelContainer: modelContext.container)
+                }
             }
             .navigationDestination(item: $loadedDetail) { detail in
                 RedesignedBookDetailView(library: detail.library, book: detail.book)

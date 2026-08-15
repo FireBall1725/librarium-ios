@@ -30,6 +30,10 @@ struct RedesignedAppShell: View {
     @State private var selectedTab: AppTab = .home
     @State private var selectedLibrary: Library?
     @State private var showScan = false
+    /// Book the books grid should push once it appears. Set when the
+    /// scanner finds the book already on a shelf and the user asks to
+    /// open it; cleared by the grid after it pushes.
+    @State private var pendingOpenBookID: String?
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -78,9 +82,18 @@ struct RedesignedAppShell: View {
             .padding(.bottom, 4)
         }
         .fullScreenCover(isPresented: $showScan) {
-            RedesignedScanFlow {
-                showScan = false
-            }
+            RedesignedScanFlow(
+                onClose: { showScan = false },
+                onOpenBook: { library, bookID in
+                    // Close the scanner, land on the book's library, and
+                    // let the books grid push the detail once it has the
+                    // book loaded.
+                    showScan = false
+                    selectedLibrary = library
+                    pendingOpenBookID = bookID
+                    selectedTab = .library
+                }
+            )
         }
     }
 
@@ -92,8 +105,14 @@ struct RedesignedAppShell: View {
             // push. Pass `\.libraryBack` so the header chevron in the
             // books grid pops back to the library list.
             NavigationStack {
-                RedesignedBooksView(library: library)
+                RedesignedBooksView(library: library, openBookID: $pendingOpenBookID)
                     .environment(\.libraryBack, { selectedLibrary = nil })
+                    // Tabs are kept alive in the ZStack above, so this
+                    // view survives a library change and would otherwise
+                    // keep the previous library's @State: its loaded
+                    // books, and a .task that never runs again. Keying
+                    // on the library forces a fresh view per library.
+                    .id(library.clientKey)
             }
         } else {
             RedesignedLibrariesView { lib in
@@ -180,6 +199,13 @@ private struct EditorialTabBar: View {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .font(.system(size: 20, weight: .semibold))
+                    // SF Symbols have different intrinsic sizes:
+                    // `list.number` is wide and short, `books.vertical.fill`
+                    // is tall. Without a fixed box each VStack is a
+                    // different height, so the icons and labels sit at
+                    // different heights across the bar even though every
+                    // slot is the same width.
+                    .frame(width: 26, height: 22)
                 Text(label)
                     .font(.system(size: 10, weight: .medium))
             }
