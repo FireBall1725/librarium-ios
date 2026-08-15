@@ -48,8 +48,17 @@ final class PersistedLibrary {
 
     /// Convert to the `Library` DTO the rest of the iOS app already consumes.
     /// `serverURL` is the synthetic `local://<account-id>` so `clientKey`
-    /// stays unique across mixed local + remote installs.
-    func toLibrary(serverAccountID: UUID, accountName: String) -> Library {
+    /// stays unique across mixed local + remote installs. Counts are
+    /// injected by the caller because they live in `PersistedBook`, not
+    /// on the library row — the libraries grid passes the SwiftData
+    /// count so empty/non-empty status mirrors what scanning has added.
+    func toLibrary(
+        serverAccountID: UUID,
+        accountName: String,
+        bookCount: Int = 0,
+        readingCount: Int = 0,
+        readCount: Int = 0
+    ) -> Library {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return Library(
@@ -61,9 +70,9 @@ final class PersistedLibrary {
             isPublic: isPublic,
             createdAt: iso.string(from: createdAt),
             updatedAt: iso.string(from: updatedAt),
-            bookCount: 0,
-            readingCount: 0,
-            readCount: 0,
+            bookCount: bookCount,
+            readingCount: readingCount,
+            readCount: readCount,
             serverURL: ServerAccount.localURL(for: serverAccountID),
             serverName: accountName
         )

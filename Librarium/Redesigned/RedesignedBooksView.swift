@@ -23,6 +23,7 @@ struct RedesignedBooksView: View {
     @State private var vm = BooksViewModel()
     @State private var searchTask: Task<Void, Never>?
     @State private var showAdd = false
+    @State private var showLiteManualAdd = false
     @State private var selectedBook: Book?
     @State private var offlineStore = LibraryOfflineStore.shared
 
@@ -91,12 +92,16 @@ struct RedesignedBooksView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .task {
-            // Local (Lite) libraries have no api endpoint to call against —
-            // their books live in SwiftData (wired in PR2). For now we
-            // render the empty state and skip the api round-trip entirely,
-            // which is also what suppresses the "unsupported URL" alert
-            // that bites when URLSession sees a `local://` base URL.
-            guard !isLocalLibrary, vm.books.isEmpty else { return }
+            // Lite libraries live entirely in SwiftData — no api to call
+            // against (the synthetic `local://` URL would trip URLSession's
+            // "unsupported URL" alert). Read straight from BookCache so
+            // the grid mirrors whatever LiteBookWriter / LiteManualAddSheet
+            // have written, then bail out before the api branch below.
+            if isLocalLibrary {
+                loadLiteBooks()
+                return
+            }
+            guard vm.books.isEmpty else { return }
             await loadBooks()
         }
         // Re-read SwiftData whenever the sync state ticks forward so the
@@ -113,11 +118,34 @@ struct RedesignedBooksView: View {
             }
         }
         .refreshable {
-            guard !isLocalLibrary else { return }
+            if isLocalLibrary {
+                loadLiteBooks()
+                return
+            }
             await loadBooks()
         }
+        // The scan flow lives in a fullScreenCover above the app shell,
+        // so dismissing it does not re-fire .task on this view. Listen
+        // for LiteBookWriter's notification and refresh from cache when
+        // the affected library matches ours.
+        .onReceive(NotificationCenter.default.publisher(for: .liteLibraryDidChange)) { note in
+            guard isLocalLibrary,
+                  let changedID = note.userInfo?["libraryID"] as? String,
+                  changedID == library.id else { return }
+            loadLiteBooks()
+        }
         .onChange(of: vm.searchText) { _, _ in
-            guard !isLocalLibrary, !appState.isOffline else { return }
+            if isLocalLibrary {
+                // Local search is just an in-memory filter against the
+                // cache — no network, no debounce needed (typing into a
+                // few-hundred-book list is instant). We still cancel any
+                // pending remote-search task so a stale remote response
+                // can't clobber the local filter result.
+                searchTask?.cancel()
+                loadLiteBooks()
+                return
+            }
+            guard !appState.isOffline else { return }
             searchTask?.cancel()
             searchTask = Task {
                 try? await Task.sleep(for: .milliseconds(350))
@@ -126,16 +154,36 @@ struct RedesignedBooksView: View {
             }
         }
         .onChange(of: vm.sortOption) { _, _ in
-            guard !isLocalLibrary, !appState.isOffline else { return }
+            if isLocalLibrary {
+                loadLiteBooks()
+                return
+            }
+            guard !appState.isOffline else { return }
             Task { await vm.search(client: appState.makeClient(serverURL: library.serverURL), libraryId: library.id) }
         }
         .onChange(of: vm.selectedMediaType) { _, _ in
-            guard !isLocalLibrary, !appState.isOffline else { return }
+            if isLocalLibrary {
+                loadLiteBooks()
+                return
+            }
+            guard !appState.isOffline else { return }
             Task { await vm.search(client: appState.makeClient(serverURL: library.serverURL), libraryId: library.id) }
         }
         .sheet(isPresented: $showAdd) {
             AddEditBookSheet(library: library) { _ in
                 Task { await vm.load(client: appState.makeClient(serverURL: library.serverURL), libraryId: library.id) }
+            }
+        }
+        .sheet(isPresented: $showLiteManualAdd) {
+            if let account = appState.accounts.first(where: { $0.url == library.serverURL && $0.kind == .local }) {
+                LiteManualAddSheet(library: library, serverAccountID: account.id) {
+                    // Re-read from SwiftData so the just-added book lands
+                    // in the grid without a full sync round-trip.
+                    let cache = BookCache(modelContainer: modelContext.container)
+                    let cached = cache.books(for: library)
+                    vm.books = cached
+                    vm.total = cached.count
+                }
             }
         }
         .navigationDestination(item: $selectedBook) { book in
@@ -177,17 +225,15 @@ struct RedesignedBooksView: View {
             sortMenu
                 .padding(.bottom, 4)
 
-            if !isLocalLibrary {
-                Button(action: { showAdd = true }) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Theme.Colors.accent)
-                        .frame(width: 38, height: 38)
-                        .background(Color.white.opacity(0.08), in: Circle())
-                        .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
-                }
-                .padding(.bottom, 4)
+            Button(action: { isLocalLibrary ? (showLiteManualAdd = true) : (showAdd = true) }) {
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.accent)
+                    .frame(width: 38, height: 38)
+                    .background(Color.white.opacity(0.08), in: Circle())
+                    .overlay(Circle().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
             }
+            .padding(.bottom, 4)
         }
         .padding(.horizontal, 18)
         .padding(.top, 12)
@@ -478,6 +524,64 @@ struct RedesignedBooksView: View {
 
     // MARK: - Load + sync helpers
 
+    /// Lite-mode read path. Reads everything for the library out of
+    /// SwiftData, then filters in memory by the current search text +
+    /// media-type chip. Plenty fast for any Lite library size — typical
+    /// local catalogs are a few hundred books at most.
+    ///
+    /// Title and author are case-insensitive substring matches. ISBN
+    /// search is intentionally skipped here: it would require reading
+    /// EditionCache for every book on every keystroke and the on-device
+    /// scan flow is the more natural way to find a book by ISBN.
+    private func loadLiteBooks() {
+        let cache = BookCache(modelContainer: modelContext.container)
+        let cached = cache.books(for: library)
+        let q = vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let mediaTypeName = vm.selectedMediaType?.displayName.lowercased()
+
+        let filtered = cached.filter { book in
+            if let mediaTypeName, !mediaTypeName.isEmpty {
+                if book.mediaType.lowercased() != mediaTypeName { return false }
+            }
+            if q.isEmpty { return true }
+            if book.title.lowercased().contains(q) { return true }
+            for c in book.contributors where c.name.lowercased().contains(q) {
+                return true
+            }
+            return false
+        }
+        vm.books = sortLite(filtered, by: vm.sortOption)
+        vm.total = vm.books.count
+    }
+
+    /// Apply the active `BookSortOption` to the Lite result set. Mirrors
+    /// the api's sort keys: title / author / created_at / publish_date,
+    /// each with an asc/desc dir. `BookCache.books(for:)` already returns
+    /// rows ordered by `sortTitle`, so the title cases are essentially
+    /// passthroughs — included for clarity.
+    private func sortLite(_ books: [Book], by option: BookSortOption) -> [Book] {
+        switch option {
+        case .titleAsc:
+            return books.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        case .titleDesc:
+            return books.sorted { $0.title.localizedStandardCompare($1.title) == .orderedDescending }
+        case .authorAsc, .authorDesc:
+            let primary: (Book) -> String = { $0.contributors.first?.name ?? "" }
+            return books.sorted {
+                let cmp = primary($0).localizedStandardCompare(primary($1))
+                return option == .authorAsc ? cmp == .orderedAscending : cmp == .orderedDescending
+            }
+        case .recentlyAdded:
+            return books.sorted { ($0.createdAt ?? "") > ($1.createdAt ?? "") }
+        case .oldestFirst:
+            return books.sorted { ($0.createdAt ?? "") < ($1.createdAt ?? "") }
+        case .newestRelease, .oldestRelease:
+            // BookCache doesn't surface publishDate (lives on edition).
+            // Fall back to title order rather than nothing.
+            return books.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }
+    }
+
     /// Single entry point for the BooksView load path. Strategy:
     ///
     /// - Kept-offline (and Lite) libraries are SwiftData-primary: render
@@ -612,8 +716,7 @@ private struct BookTile: View {
     /// Fanned cover URL — match against the library's server prefix so the
     /// authenticated cover endpoint is hit with the right Bearer token.
     private var coverURL: URL? {
-        guard let path = book.coverUrl, !path.isEmpty else { return nil }
-        return URL(string: library.serverURL + path)
+        library.coverURL(for: book.coverUrl)
     }
 
     private var primaryAuthor: String? {

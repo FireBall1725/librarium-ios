@@ -30,7 +30,7 @@ struct LiteBookWriter {
 
         let contributors: [[String: Any]] = lookup.authors.enumerated().map { idx, name in
             [
-                "id": UUID().uuidString,
+                "contributorId": UUID().uuidString,
                 "name": name,
                 "role": "Author",
                 "displayOrder": idx
@@ -64,6 +64,16 @@ struct LiteBookWriter {
         // Persist the book row.
         let bookCache = BookCache(modelContainer: modelContainer)
         bookCache.upsert([book], for: library, serverAccountID: serverAccountID)
+        // Tell open BooksView instances to re-read from cache. The scan
+        // flow lives in a fullScreenCover above the books view, so .task
+        // / .onAppear don't refire when it dismisses — without this
+        // ping, the just-added book stays invisible until the user
+        // navigates away and back.
+        NotificationCenter.default.post(
+            name: .liteLibraryDidChange,
+            object: nil,
+            userInfo: ["libraryID": library.id]
+        )
 
         // Persist a primary edition so the detail view's Editions
         // section isn't empty. ISBN + publisher + pageCount come from
@@ -96,13 +106,55 @@ struct LiteBookWriter {
         return book
     }
 
-    /// Shared decoder configured the same way `APIClient` does —
-    /// snake_case input keys (`isbn_13`) get converted to camelCase
-    /// property names so Book + BookEdition's existing init(from:)
-    /// can decode our hand-built dicts.
-    private static let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.keyDecodingStrategy = .convertFromSnakeCase
-        return d
-    }()
+    /// Manual-add variant for books without an ISBN. The user types
+    /// title + author + media type into the LiteManualAddSheet; we
+    /// build a minimal lookup-shaped payload and reuse the same write
+    /// path so editions get created the same way scanned books do.
+    @discardableResult
+    func addManual(
+        title: String,
+        author: String,
+        to library: Library,
+        serverAccountID: UUID,
+        mediaType: String = "Book",
+        readStatus: String = "unread"
+    ) -> Book? {
+        let lookup = ISBNLookupResult(
+            provider: "manual",
+            providerDisplay: "Manual entry",
+            title: title,
+            subtitle: "",
+            authors: author.isEmpty ? [] : [author],
+            publisher: "",
+            publishDate: "",
+            isbn10: "",
+            isbn13: "",
+            description: "",
+            coverUrl: "",
+            language: "",
+            pageCount: nil,
+            categories: nil
+        )
+        return add(
+            lookup: lookup,
+            to: library,
+            serverAccountID: serverAccountID,
+            mediaType: mediaType,
+            readStatus: readStatus
+        )
+    }
+
+    /// Decoder without any key-conversion strategy. We hand-build the
+    /// JSON dicts with the exact key names Book / BookEdition's
+    /// CodingKeys expect (camelCase for most, but BookEdition uses
+    /// explicit snake_case raw values for `isbn_10` / `isbn_13` that
+    /// `.convertFromSnakeCase` would silently rename and break).
+    private static let decoder = JSONDecoder()
+}
+
+extension Notification.Name {
+    /// Posted by `LiteBookWriter` after a successful write so any open
+    /// books view can re-read SwiftData. `userInfo["libraryID"]` carries
+    /// the affected library's id (String).
+    static let liteLibraryDidChange = Notification.Name("liteLibraryDidChange")
 }

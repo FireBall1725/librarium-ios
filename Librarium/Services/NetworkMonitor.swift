@@ -58,10 +58,12 @@ final class NetworkMonitor {
         failures.removeValue(forKey: serverURL)
     }
 
-    /// True when there's no network at all OR the named server failed
-    /// within the last minute. Either case is a reason to skip api and
-    /// go straight to cache.
+    /// True when the URL is a Lite-mode synthetic (no server to ever
+    /// reach), or there's no network at all, or the named server
+    /// failed within the last minute. Any of these is a reason to
+    /// skip api and go straight to cache.
     func shouldSkipAPI(for serverURL: String) -> Bool {
+        if serverURL.hasPrefix("local://") { return true }
         if !isOnline { return true }
         guard let last = failures[serverURL] else { return false }
         return Date().timeIntervalSince(last) < unreachableTTL

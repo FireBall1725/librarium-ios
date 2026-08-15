@@ -660,10 +660,15 @@ struct RedesignedScanResultView: View {
             }
         }
 
-        // Prefer plain "Novel" over "Light Novel" / "Graphic Novel" when
-        // both exist — exact match wins, then partial.
-        if let exact = types.first(where: { $0.displayName.lowercased() == "novel" }) {
-            return exact.id
+        // Prefer plain "Book" (Lite's default name) or plain "Novel" (the
+        // stock remote-api name). Partial matches on "novel" come last so
+        // we don't accidentally pick "Graphic novel" / "Light novel" as
+        // the default for an unclassified scan.
+        if let book = types.first(where: { $0.displayName.lowercased() == "book" }) {
+            return book.id
+        }
+        if let novel = types.first(where: { $0.displayName.lowercased() == "novel" }) {
+            return novel.id
         }
         if let partial = types.first(where: { $0.displayName.lowercased().contains("novel") }) {
             return partial.id

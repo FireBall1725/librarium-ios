@@ -569,8 +569,7 @@ struct RedesignedSeriesDetailView: View {
     // MARK: - Helpers
 
     private func coverURL(for book: Book) -> URL? {
-        guard let path = book.coverUrl, !path.isEmpty else { return nil }
-        return URL(string: library.serverURL + path)
+        library.coverURL(for: book.coverUrl)
     }
 }
 

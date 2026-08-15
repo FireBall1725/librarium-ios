@@ -76,7 +76,17 @@ final class RedesignedLibrariesViewModel {
                 sortBy: [SortDescriptor(\.createdAt)]
             )
             if let rows = try? context.fetch(descriptor) {
-                let libs = rows.map { $0.toLibrary(serverAccountID: accountID, accountName: account.name) }
+                let serverURL = ServerAccount.localURL(for: accountID)
+                let libs = rows.map { row -> Library in
+                    let counts = Self.liteCounts(libraryID: row.id.uuidString, serverURL: serverURL, in: context)
+                    return row.toLibrary(
+                        serverAccountID: accountID,
+                        accountName: account.name,
+                        bookCount: counts.total,
+                        readingCount: counts.reading,
+                        readCount: counts.read
+                    )
+                }
                 collected.append(contentsOf: libs)
             }
         }
@@ -168,7 +178,7 @@ final class RedesignedLibrariesViewModel {
             LibraryOfflineStore.shared.cacheLibrary(lib)
         }
 
-        await loadCovers(appState: appState)
+        await loadCovers(appState: appState, modelContainer: modelContainer)
     }
 
     /// Pure-offline load path. Reads local library metadata from
@@ -188,8 +198,16 @@ final class RedesignedLibrariesViewModel {
                 sortBy: [SortDescriptor(\.createdAt)]
             )
             if let rows = try? context.fetch(descriptor) {
-                collected.append(contentsOf: rows.map {
-                    $0.toLibrary(serverAccountID: accountID, accountName: account.name)
+                let serverURL = ServerAccount.localURL(for: accountID)
+                collected.append(contentsOf: rows.map { row -> Library in
+                    let counts = Self.liteCounts(libraryID: row.id.uuidString, serverURL: serverURL, in: context)
+                    return row.toLibrary(
+                        serverAccountID: accountID,
+                        accountName: account.name,
+                        bookCount: counts.total,
+                        readingCount: counts.reading,
+                        readCount: counts.read
+                    )
                 })
             }
         }
@@ -213,7 +231,16 @@ final class RedesignedLibrariesViewModel {
     /// each card. Best-effort — failures leave that library's stack
     /// rendering placeholder rectangles. Title + author are captured so
     /// missing covers fall back to a generated jacket.
-    private func loadCovers(appState: AppState) async {
+    private func loadCovers(appState: AppState, modelContainer: ModelContainer) async {
+        // Lite libraries: read covers from SwiftData synchronously — no
+        // network call, the data is already on-device.
+        for lib in libraries where lib.serverURL.hasPrefix("local://") {
+            let books = Self.liteCoverBooks(libraryID: lib.id, library: lib, modelContainer: modelContainer)
+            if !books.isEmpty {
+                libraryCovers[lib.clientKey] = books
+            }
+        }
+
         let libs = libraries.filter { !$0.serverURL.hasPrefix("local://") }
         await withTaskGroup(of: (String, [CoverBook]).self) { group in
             for lib in libs {
@@ -222,10 +249,7 @@ final class RedesignedLibrariesViewModel {
                     do {
                         let page = try await BookService(client: client).list(libraryId: lib.id, perPage: 3)
                         let books = page.items.map { book -> CoverBook in
-                            let url: URL? = {
-                                guard let path = book.coverUrl, !path.isEmpty else { return nil }
-                                return URL(string: lib.serverURL + path)
-                            }()
+                            let url = lib.coverURL(for: book.coverUrl)
                             let primaryAuthor = book.contributors
                                 .first(where: { $0.role.caseInsensitiveCompare("author") == .orderedSame })?.name
                                 ?? book.contributors.first?.name
@@ -241,6 +265,53 @@ final class RedesignedLibrariesViewModel {
                 libraryCovers[key] = books
             }
         }
+    }
+
+    /// Top-3 covers for a Lite library's card stack, drawn from
+    /// `PersistedBook`. Sorted by `updatedAt` descending so the most
+    /// recently added books surface in the fanned stack.
+    private static func liteCoverBooks(
+        libraryID: String,
+        library: Library,
+        modelContainer: ModelContainer
+    ) -> [CoverBook] {
+        let context = ModelContext(modelContainer)
+        let serverURL = library.serverURL
+        var descriptor = FetchDescriptor<PersistedBook>(
+            predicate: #Predicate {
+                $0.serverURL == serverURL && $0.libraryId == libraryID
+            },
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 3
+        guard let rows = try? context.fetch(descriptor) else { return [] }
+        return rows.map { row in
+            CoverBook(
+                url: library.coverURL(for: row.coverUrl),
+                title: row.title,
+                author: row.primaryAuthor
+            )
+        }
+    }
+
+    /// Count Lite-library books in SwiftData, broken out by read status so
+    /// the libraries grid card subtitle ("3 books · 1 reading · 2 read")
+    /// reflects local writes. Scoped to a single library by `(serverURL,
+    /// libraryId)` to avoid bleed across mixed local + remote installs.
+    fileprivate static func liteCounts(
+        libraryID: String,
+        serverURL: String,
+        in context: ModelContext
+    ) -> (total: Int, reading: Int, read: Int) {
+        let descriptor = FetchDescriptor<PersistedBook>(
+            predicate: #Predicate {
+                $0.serverURL == serverURL && $0.libraryId == libraryID
+            }
+        )
+        guard let rows = try? context.fetch(descriptor) else { return (0, 0, 0) }
+        let reading = rows.filter { $0.readStatus == "reading" }.count
+        let read = rows.filter { $0.readStatus == "read" }.count
+        return (rows.count, reading, read)
     }
 
     private static func isCancellation(_ error: Error) -> Bool {
@@ -283,6 +354,13 @@ struct RedesignedLibrariesView: View {
                 await vm.load(appState: appState, modelContainer: modelContext.container)
             }
             .refreshable { await vm.load(appState: appState, modelContainer: modelContext.container) }
+            // `LiteBookWriter` posts this whenever a Lite write completes.
+            // Refresh the libraries grid so the just-added book bumps the
+            // count and slides into the fanned cover stack without the
+            // user pulling-to-refresh.
+            .onReceive(NotificationCenter.default.publisher(for: .liteLibraryDidChange)) { _ in
+                Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
+            }
             .sheet(item: $reauthAccount) { account in
                 ReauthSheet(account: account)
             }
