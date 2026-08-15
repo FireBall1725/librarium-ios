@@ -110,3 +110,19 @@ jobs:
           gh workflow run testflight.yml \
             --ref "v${{ steps.version.outputs.version }}" \
             --repo "${{ github.repository }}"
+
+  # Posts to #releases. Separate job rather than a step because
+  # announce-discord.yml is a reusable workflow, and a job that calls one
+  # accepts only uses/with/secrets/needs/if. Every step inside it is
+  # continue-on-error: a Discord outage must not fail a release whose tag
+  # and TestFlight build already went out.
+  #
+  # No `image` input — this repo ships an app, not a container.
+  announce:
+    needs: release
+    if: ${{ inputs.dry-run == false }}
+    uses: FireBall1725/workflows/.github/workflows/announce-discord.yml@v1
+    with:
+      version: ${{ needs.release.outputs.version }}
+      channel: stable
+    secrets: inherit

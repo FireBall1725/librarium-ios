@@ -1,0 +1,43 @@
+# Drives the Discord post in #releases.
+
+project:
+  name: Librarium for iOS
+  emoji: "📚"
+  footer: "Librarium · self-hosted book, manga, and comic tracker"
+
+channels:
+  stable:
+    announce: true
+    colour: "0x2ECC71"
+    prefix: ""
+  # The iOS app has no release-candidate channel: builds go to TestFlight,
+  # which is the testing step the other repos use an -rc tag for. Kept here
+  # with announce off so the shape matches the other repos and turning it
+  # on later is a one-line change.
+  rc:
+    announce: false
+    colour: "0xF1C40F"
+    prefix: "Release candidate — "
+  nightly:
+    announce: false
+
+# No `docker pull` line: this repo ships an app, not an image. A release
+# tags the source and dispatches TestFlight, so the build reaches testers
+# through Apple rather than a registry.
+#
+# This post is read by testers, not by the maintainer, so it describes
+# their wait rather than the internal one. Internal testers get a build
+# minutes after it finishes processing; everyone else sits behind Apple's
+# beta review, which runs from a few hours to a couple of days.
+getting_started: |
+  Heading to TestFlight. Apple reviews every beta build before it reaches
+  testers, which usually takes a few hours and can stretch to a couple of
+  days, so expect the notification a while after this post.
+
+links:
+  - name: Site
+    url: https://librarium.press/
+  - name: Source
+    url: https://github.com/{{repo}}
+  - name: Changes
+    url: "{{compare_url}}"
