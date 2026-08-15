@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to the Librarium iOS client.
 
+Using an AI coding agent? [AGENTS.md](./AGENTS.md) has the architecture, the build and test loop, and the conventions it needs. Point your tool at it, and review what it writes before you open the PR.
+
 ## License and commit sign-off (DCO)
 
 The project is licensed under the **GNU Affero General Public License v3.0 only** ([LICENSE](LICENSE)). Contributions are accepted under the same license.
