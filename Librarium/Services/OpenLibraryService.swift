@@ -55,6 +55,99 @@ struct OpenLibraryService {
         return []
     }
 
+    // MARK: - Endpoint 3: search.json
+
+    /// Free-text search, for books added by hand that have no ISBN to
+    /// look up. Returns several candidates because a title match is a
+    /// guess; the caller picks one.
+    func search(_ query: String) async throws -> [ISBNLookupResult] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        var components = URLComponents(string: "https://openlibrary.org/search.json")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: trimmed),
+            URLQueryItem(name: "limit", value: "15"),
+            // Ask for only what the result rows render. The default
+            // response carries a large payload per document.
+            URLQueryItem(
+                name: "fields",
+                value: "key,title,subtitle,author_name,first_publish_year,isbn,cover_i,number_of_pages_median,publisher,language"
+            )
+        ]
+        guard let url = components.url else { return [] }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let docs = root["docs"] as? [[String: Any]]
+        else { return [] }
+
+        return docs.compactMap { Self.decodeSearchDoc($0) }
+    }
+
+    private static func decodeSearchDoc(_ doc: [String: Any]) -> ISBNLookupResult? {
+        let title = (doc["title"] as? String) ?? ""
+        guard !title.isEmpty else { return nil }
+
+        let isbns = (doc["isbn"] as? [String]) ?? []
+        let coverUrl = (doc["cover_i"] as? Int).map {
+            "https://covers.openlibrary.org/b/id/\($0)-L.jpg"
+        } ?? ""
+        let year = (doc["first_publish_year"] as? Int).map(String.init) ?? ""
+
+        return ISBNLookupResult(
+            provider: "openlibrary",
+            providerDisplay: "Open Library",
+            title: title,
+            subtitle: (doc["subtitle"] as? String) ?? "",
+            authors: (doc["author_name"] as? [String]) ?? [],
+            publisher: ((doc["publisher"] as? [String]) ?? []).first ?? "",
+            publishDate: year,
+            isbn10: isbns.first(where: { $0.count == 10 }) ?? "",
+            isbn13: isbns.first(where: { $0.count == 13 }) ?? "",
+            // search.json has no description field at all; the works
+            // fetch below fills it once a candidate is chosen.
+            description: "",
+            coverUrl: coverUrl,
+            language: ((doc["language"] as? [String]) ?? []).first ?? "",
+            pageCount: doc["number_of_pages_median"] as? Int,
+            categories: nil
+        )
+    }
+
+    // MARK: - Works description
+
+    /// Fetch a book's long description from `/works/{id}.json`.
+    ///
+    /// Neither `api/books` nor `search.json` returns one, which is why
+    /// every Lite book added so far has a blank description. This is a
+    /// second round-trip, so it runs only when the caller wants a full
+    /// record rather than on every scan.
+    ///
+    /// The description field is polymorphic: older records store a plain
+    /// string, newer ones an object with a `value` key.
+    func worksDescription(isbn: String) async -> String {
+        guard let editionURL = URL(string: "https://openlibrary.org/isbn/\(isbn).json"),
+              let (editionData, editionResponse) = try? await URLSession.shared.data(from: editionURL),
+              let editionHTTP = editionResponse as? HTTPURLResponse, editionHTTP.statusCode == 200,
+              let edition = try? JSONSerialization.jsonObject(with: editionData) as? [String: Any],
+              let works = edition["works"] as? [[String: Any]],
+              let workKey = works.first?["key"] as? String
+        else { return "" }
+
+        guard let workURL = URL(string: "https://openlibrary.org\(workKey).json"),
+              let (workData, workResponse) = try? await URLSession.shared.data(from: workURL),
+              let workHTTP = workResponse as? HTTPURLResponse, workHTTP.statusCode == 200,
+              let work = try? JSONSerialization.jsonObject(with: workData) as? [String: Any]
+        else { return "" }
+
+        if let text = work["description"] as? String { return text }
+        if let wrapped = work["description"] as? [String: Any],
+           let text = wrapped["value"] as? String { return text }
+        return ""
+    }
+
     // MARK: - Endpoint 1: api/books
 
     private func fetchBooksAPI(isbn: String) async throws -> [ISBNLookupResult] {
@@ -194,5 +287,51 @@ struct OpenLibraryService {
             pageCount: pageCount,
             categories: nil
         )
+    }
+}
+
+// MARK: - LiteMetadataProvider
+
+extension OpenLibraryService: LiteMetadataProvider {
+    var id: String { "openlibrary" }
+    var displayName: String { "Open Library" }
+    /// Keyless and anonymous, so it is always available and never
+    /// identifies the user to anyone.
+    /// Needs no credentials, so "configured" is purely the user's
+    /// on/off switch. On by default.
+    var isConfigured: Bool { LiteMetadataSettings.isEnabled(providerID: "openlibrary") }
+    var isAuthenticated: Bool { false }
+
+    /// The protocol's ISBN path folds in the works description, which
+    /// the scan flow deliberately skips to keep the scan fast. A refresh
+    /// is a user-initiated action where a second round-trip is fine.
+    func lookup(isbn: String) async throws -> [ISBNLookupResult] {
+        let results = try await self.isbn(isbn)
+        guard let first = results.first, first.description.isEmpty else { return results }
+
+        let lookupISBN = first.isbn13.isEmpty ? (first.isbn10.isEmpty ? isbn : first.isbn10) : first.isbn13
+        let description = await worksDescription(isbn: lookupISBN)
+        guard !description.isEmpty else { return results }
+
+        return [ISBNLookupResult(
+            provider: first.provider,
+            providerDisplay: first.providerDisplay,
+            title: first.title,
+            subtitle: first.subtitle,
+            authors: first.authors,
+            publisher: first.publisher,
+            publishDate: first.publishDate,
+            isbn10: first.isbn10,
+            isbn13: first.isbn13,
+            description: description,
+            coverUrl: first.coverUrl,
+            language: first.language,
+            pageCount: first.pageCount,
+            categories: first.categories
+        )]
+    }
+
+    func search(query: String) async throws -> [ISBNLookupResult] {
+        try await self.search(query)
     }
 }
