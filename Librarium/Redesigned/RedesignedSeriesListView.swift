@@ -524,8 +524,7 @@ struct SeriesMosaic: View {
     }
 
     private func coverURL(for book: SeriesPreviewBook) -> URL? {
-        guard let path = book.coverUrl, !path.isEmpty else { return nil }
-        return URL(string: library.serverURL + path)
+        library.coverURL(for: book.coverUrl)
     }
 
     /// Per-tile gradient placeholder — picks one of 4 jewel-tone palettes

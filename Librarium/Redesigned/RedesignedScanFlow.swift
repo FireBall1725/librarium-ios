@@ -2,6 +2,7 @@
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
 import SwiftUI
+import SwiftData
 import AVFoundation
 import UIKit
 
@@ -15,10 +16,18 @@ import UIKit
 /// library" wired up.
 struct RedesignedScanFlow: View {
     let onClose: () -> Void
+    /// Called when the scanned book is already on a shelf and the user
+    /// chooses to open it instead of adding another copy. The shell
+    /// closes the scanner and pushes the book detail.
+    var onOpenBook: (Library, String) -> Void = { _, _ in }
 
     @Environment(AppState.self) private var appState
 
     @State private var phase: Phase = .camera
+    /// Manual-entry sheet lives at the flow level so both the camera
+    /// view (when the user can't scan) and the result view (when the
+    /// scanned code wasn't an ISBN) can summon it.
+    @State private var showManualEntry = false
 
     private enum Phase: Equatable {
         case camera
@@ -29,27 +38,32 @@ struct RedesignedScanFlow: View {
         ZStack {
             switch phase {
             case .camera:
-                // Camera fills edge-to-edge; the camera view itself
-                // ignores safe area so the AVCapture preview reaches the
-                // screen edges. Its overlay UI is positioned with
-                // explicit padding from the actual top/bottom.
                 RedesignedScanCameraView(
                     onScan: { isbn in
                         let normalized = normalize(isbn: isbn)
                         phase = .result(isbn: normalized)
                     },
+                    onManualEntry: { showManualEntry = true },
                     onClose: onClose
                 )
                 .ignoresSafeArea()
             case .result(let isbn):
-                // Result respects the safe area so back/close buttons
-                // don't tuck behind the status bar.
                 RedesignedScanResultView(
                     isbn: isbn,
                     onScanAnother: { phase = .camera },
-                    onClose: onClose
+                    onClose: onClose,
+                    onManualEntry: { showManualEntry = true },
+                    onOpenBook: onOpenBook
                 )
             }
+        }
+        .sheet(isPresented: $showManualEntry) {
+            ManualISBNEntrySheet { isbn in
+                showManualEntry = false
+                phase = .result(isbn: normalize(isbn: isbn))
+            }
+            .presentationDetents([.height(280)])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -68,12 +82,12 @@ struct RedesignedScanFlow: View {
 /// close button.
 struct RedesignedScanCameraView: View {
     let onScan: (String) -> Void
+    let onManualEntry: () -> Void
     let onClose: () -> Void
 
     @State private var laserOffset: CGFloat = -1
     @State private var hasFiredScan = false
     @State private var mode: ScanMode = .add
-    @State private var showManualEntry = false
 
     enum ScanMode: Hashable { case add, rate }
 
@@ -123,16 +137,6 @@ struct RedesignedScanCameraView: View {
             }
         }
         .background(Color.black)
-        .sheet(isPresented: $showManualEntry) {
-            ManualISBNEntrySheet { isbn in
-                showManualEntry = false
-                guard !hasFiredScan else { return }
-                hasFiredScan = true
-                onScan(isbn)
-            }
-            .presentationDetents([.height(280)])
-            .presentationDragIndicator(.visible)
-        }
     }
 
     @ViewBuilder
@@ -258,7 +262,7 @@ struct RedesignedScanCameraView: View {
     @ViewBuilder
     private var manualEntryButton: some View {
         Button {
-            showManualEntry = true
+            onManualEntry()
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "keyboard")
@@ -481,18 +485,35 @@ struct RedesignedScanResultView: View {
     let isbn: String
     let onScanAnother: () -> Void
     let onClose: () -> Void
+    /// Triggered by the "Enter manually" button on the no-match screen.
+    /// The parent ScanFlow surfaces its own manual-entry sheet.
+    let onManualEntry: () -> Void
+    /// Open an existing book record. Passed up to the app shell, which
+    /// closes the scanner, switches to the library tab, and pushes the
+    /// book detail.
+    let onOpenBook: (Library, String) -> Void
 
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
 
     @State private var lookup: ISBNLookupResult?
     @State private var lookupLoading = true
     @State private var lookupError: String?
     @State private var libraries: [Library] = []
     @State private var librariesError: String?
-    /// Per-library ownership keyed by `Library.clientKey`. true = book
-    /// with this ISBN is already in that library; false = confirmed not
-    /// in library; nil = check still in flight.
-    @State private var ownership: [String: Bool] = [:]
+    /// What the ownership check found for one library. Carries the book
+    /// id so the result screen can offer to open the existing record,
+    /// and the copy count so the badge can say how many are on the
+    /// shelf rather than just "already in".
+    struct OwnedMatch: Equatable {
+        let bookId: String
+        let copyCount: Int
+    }
+
+    /// Per-library ownership keyed by `Library.clientKey`. A missing key
+    /// means the check is still in flight; `.some(nil)` means confirmed
+    /// not in that library.
+    @State private var ownership: [String: OwnedMatch?] = [:]
     /// `clientKey` (server URL + library id) so duplicates between
     /// servers — same library uuid on a cloned database, or just two
     /// libraries with the same display name — don't select together.
@@ -555,18 +576,25 @@ struct RedesignedScanResultView: View {
                             .padding(.top, 8)
                     }
                 }
-                .padding(.bottom, 100) // room for the CTA
             }
             .scrollIndicators(.hidden)
-
-            VStack {
-                Spacer()
+            // safeAreaInset rather than an overlay plus a hardcoded
+            // bottom padding: it reserves exactly the CTA's height, so
+            // the last section stays reachable however tall the CTA
+            // gets. The old 100pt guess stopped being enough the moment
+            // a second button appeared for books already on a shelf.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if lookup != nil {
                     addCTA
                 }
             }
         }
-        .task { await runLookup() }
+        // Keyed on the isbn: tapping "Enter manually" from the no-match
+        // screen moves .result(isbn: A) to .result(isbn: B), which is the
+        // same switch branch and so the same view identity. A bare
+        // .task never re-ran and the screen kept showing the old code as
+        // unmatched.
+        .task(id: isbn) { await runLookup() }
         .onChange(of: selectedLibraryKey) { _, _ in
             Task { await loadLibraryDependentMetadata() }
         }
@@ -587,6 +615,33 @@ struct RedesignedScanResultView: View {
     private func loadLibraryDependentMetadata() async {
         guard let library = libraries.first(where: { $0.clientKey == selectedLibraryKey })
             ?? libraries.first else { return }
+
+        // Lite libraries don't have a server-side media type catalog.
+        // Seed a small hardcoded list so the picker has options and
+        // the picker doesn't sit on "Loading…" forever.
+        if library.serverURL.hasPrefix("local://") {
+            if mediaTypesByServer[library.serverURL] == nil {
+                mediaTypesByServer[library.serverURL] = Self.liteMediaTypes
+            }
+            // Reseed whenever the current selection is not one of this
+            // library's types, not only when it is nil. Switching the
+            // target from a remote library left that server's media-type
+            // uuid selected, which matches nothing here, so `addToLibrary`
+            // found no match and silently wrote "Book" over the user's
+            // choice of Manga.
+            let types = mediaTypesByServer[library.serverURL] ?? []
+            let stillValid = selectedMediaTypeID.map { id in
+                types.contains { $0.id == id }
+            } ?? false
+            if !stillValid {
+                selectedMediaTypeID = guessMediaTypeID(for: lookup, types: types)
+                    ?? types.first?.id
+            }
+            // Tags don't exist for Lite either; leave empty.
+            libraryTags = []
+            return
+        }
+
         let client = appState.makeClient(serverURL: library.serverURL)
 
         if mediaTypesByServer[library.serverURL] == nil {
@@ -639,10 +694,15 @@ struct RedesignedScanResultView: View {
             }
         }
 
-        // Prefer plain "Novel" over "Light Novel" / "Graphic Novel" when
-        // both exist — exact match wins, then partial.
-        if let exact = types.first(where: { $0.displayName.lowercased() == "novel" }) {
-            return exact.id
+        // Prefer plain "Book" (Lite's default name) or plain "Novel" (the
+        // stock remote-api name). Partial matches on "novel" come last so
+        // we don't accidentally pick "Graphic novel" / "Light novel" as
+        // the default for an unclassified scan.
+        if let book = types.first(where: { $0.displayName.lowercased() == "book" }) {
+            return book.id
+        }
+        if let novel = types.first(where: { $0.displayName.lowercased() == "novel" }) {
+            return novel.id
         }
         if let partial = types.first(where: { $0.displayName.lowercased().contains("novel") }) {
             return partial.id
@@ -758,7 +818,7 @@ struct RedesignedScanResultView: View {
                 if !libraries.isEmpty {
                     VStack(spacing: 0) {
                         ForEach(Array(libraries.enumerated()), id: \.element.clientKey) { idx, library in
-                            let owned = ownership[library.clientKey] == true
+                            let owned = ownedMatch(for: library) != nil
                             Button {
                                 selectedLibraryKey = library.clientKey
                             } label: {
@@ -834,11 +894,11 @@ struct RedesignedScanResultView: View {
                 }
             }
             Spacer()
-            if owned {
+            if let match = ownedMatch(for: library) {
                 // Informational only — tapping still selects, the CTA
                 // shows "Add another copy" since the api increments the
                 // existing edition's copy count when the ISBN matches.
-                ownedBadge
+                ownedBadge(copies: match.copyCount)
             } else if ownership[library.clientKey] == nil {
                 ProgressView()
                     .scaleEffect(0.65)
@@ -854,11 +914,11 @@ struct RedesignedScanResultView: View {
     }
 
     @ViewBuilder
-    private var ownedBadge: some View {
+    private func ownedBadge(copies: Int) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "checkmark")
                 .font(.system(size: 9, weight: .bold))
-            Text("Already in")
+            Text("\(copies) \(copies == 1 ? "Copy" : "Copies")")
                 .font(.system(size: 10, weight: .semibold))
                 .tracking(0.4)
         }
@@ -1090,24 +1150,38 @@ struct RedesignedScanResultView: View {
 
     @ViewBuilder
     private func errorView(message: String) -> some View {
+        let looksLikeUPC = Self.scannedLooksLikeUPC(isbn)
         VStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 30))
                 .foregroundStyle(Theme.Colors.warn)
-            Text("No match")
+            Text(looksLikeUPC ? "Not an ISBN" : "No match")
                 .font(Theme.Fonts.cardTitle)
                 .foregroundStyle(Theme.Colors.appText)
-            Text(message)
+            Text(looksLikeUPC
+                 ? "This looks like a UPC barcode, not an ISBN. Find the ISBN inside the front cover and enter it manually."
+                 : message)
                 .font(Theme.Fonts.ui(13, weight: .medium))
                 .foregroundStyle(Theme.Colors.appText3)
                 .multilineTextAlignment(.center)
-            Button { onScanAnother() } label: {
-                Text("Scan another")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.accent)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Theme.Colors.accentSoft, in: Capsule())
+                .padding(.horizontal, 8)
+            HStack(spacing: 10) {
+                Button { onScanAnother() } label: {
+                    Text("Scan another")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText2)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.06), in: Capsule())
+                }
+                Button { onManualEntry() } label: {
+                    Text("Enter manually")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.accent)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Theme.Colors.accentSoft, in: Capsule())
+                }
             }
             .padding(.top, 8)
         }
@@ -1116,12 +1190,30 @@ struct RedesignedScanResultView: View {
         .padding(.vertical, 30)
     }
 
+    /// Heuristic: 12-digit codes are UPC-A; 13-digit codes whose
+    /// prefix isn't 978 or 979 aren't ISBNs in the Bookland sense
+    /// (they're EAN-13 representations of UPCs, or some other
+    /// non-book product). Either way, the user almost certainly
+    /// needs to enter the printed ISBN by hand.
+    private static func scannedLooksLikeUPC(_ raw: String) -> Bool {
+        let digits = raw.filter { $0.isNumber }
+        if digits.count == 12 { return true }
+        if digits.count == 13, !(digits.hasPrefix("978") || digits.hasPrefix("979")) {
+            return true
+        }
+        return false
+    }
+
     // MARK: - CTA
 
     @ViewBuilder
     private var addCTA: some View {
         let library = libraries.first { $0.clientKey == selectedLibraryKey }
-        let owned = library.map { ownership[$0.clientKey] == true } ?? false
+        let owned = library.flatMap { ownedMatch(for: $0) } != nil
+        // Explicit VStack: as a bare pair of sibling views these two
+        // buttons land on top of each other inside safeAreaInset, which
+        // does not stack its content for you.
+        VStack(spacing: 10) {
         Button {
             guard let library else { return }
             Task { await addToLibrary(library: library) }
@@ -1152,17 +1244,60 @@ struct RedesignedScanResultView: View {
         }
         .buttonStyle(.plain)
         .disabled(library == nil || isAdding || addedSuccess)
-        .padding(.horizontal, 22)
-        .padding(.bottom, 30)
         // Suppress the unused-warning when the closure doesn't reference
         // `owned` — kept here so future status-driven CTA tweaks have it.
         .accessibilityLabel(owned ? "Add another copy" : "Add")
+
+        // Already on the shelf: scanning is then the fastest way to
+        // reach the record, e.g. to update reading progress. Adding
+        // another copy is rarely what the user meant, so give them the
+        // book itself as a second action.
+        if let library, let match = ownedMatch(for: library) {
+            Button {
+                onOpenBook(library, match.bookId)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "book")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("View in \(library.name)")
+                        .font(.system(size: 15, weight: .semibold))
+                }
+                .foregroundStyle(Theme.Colors.appText)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Theme.Colors.appBackground)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(Theme.Colors.appLine, lineWidth: 1)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 10)
+        .padding(.bottom, 30)
+        // The inset sits over the page background, so give it one of its
+        // own; without it the scroll content shows through behind the
+        // buttons as it passes underneath.
+        .background(Theme.Colors.appBackground)
+    }
+
+    /// The match for a library, or nil when the book is not there. A
+    /// key that is absent entirely means the check has not finished, and
+    /// also reads as nil here — callers that care about the difference
+    /// check `ownership[key] == nil` directly.
+    private func ownedMatch(for library: Library) -> OwnedMatch? {
+        ownership[library.clientKey] ?? nil
     }
 
     private func ctaLabel(for library: Library?) -> String {
         if addedSuccess { return "Added" }
         guard let library else { return "Pick a library" }
-        if ownership[library.clientKey] == true {
+        if ownedMatch(for: library) != nil {
             return "Add another copy to \(library.name)"
         }
         return "Add to \(library.name)"
@@ -1174,30 +1309,24 @@ struct RedesignedScanResultView: View {
         lookupLoading = true
         defer { lookupLoading = false }
 
-        // Lookup is provider-based (Open Library / Google Books), so any
-        // remote server can answer — we prefer the preferred account when
-        // remote, otherwise fall back to the first remote we find. Local
-        // (Lite) accounts can't answer because there's no api to call;
-        // the scan flow surfaces a clear "needs a server" message below
-        // when every account is local.
-        guard let lookupAccount = lookupCapableAccount() else {
-            lookupError = "Scanning ISBNs needs a server signed in."
-            librariesError = "No servers available to add scanned books to."
-            return
-        }
-        let primaryClient = appState.makeClient(serverURL: lookupAccount.url)
-
-        async let lookupTask = LookupService(client: primaryClient).isbn(isbn)
+        // Lookup strategy:
+        // - If we have a remote-capable account, hit its api LookupService
+        //   first — server-side aggregation gives richer metadata than
+        //   any single provider direct.
+        // - Fall back to Open Library directly when no remote is
+        //   available OR the api call fails.
+        // Lite-only installs reach the Open Library path immediately.
+        let lookupAccount = lookupCapableAccount()
         async let allLibrariesTask = loadAllLibraries()
-
-        do {
-            let results = try await lookupTask
-            lookup = results.first(where: { !$0.title.isEmpty })
-            if lookup == nil {
-                lookupError = "No results for \(isbn)."
-            }
-        } catch {
-            lookupError = error.localizedDescription
+        async let lookupResultTask = Self.lookupMetadata(isbn: isbn, account: lookupAccount, appState: appState)
+        let result = await lookupResultTask
+        switch result {
+        case .success(let payload):
+            lookup = payload
+        case .notFound:
+            lookupError = "No results for \(isbn)."
+        case .failed(let message):
+            lookupError = message
         }
 
         let libs = await allLibrariesTask
@@ -1222,17 +1351,35 @@ struct RedesignedScanResultView: View {
     /// Fan out `LibraryService.list` across every signed-in account.
     /// Stamps server URL + name onto each library so the rest of the
     /// flow can route subsequent requests (byISBN, create) to the
-    /// correct server.
+    /// correct server. Lite accounts contribute their SwiftData
+    /// libraries here too so the user can scan straight into a local
+    /// library without needing a server.
     private func loadAllLibraries() async -> [Library] {
-        // Lite accounts are skipped — they have no api endpoint to list
-        // against, and the scan flow writes books through api anyway.
-        // When local book writes land (PR2), this will gain a SwiftData
-        // path that contributes local libraries here too.
-        let accounts = appState.accounts.filter { $0.kind == .remote }
-        guard !accounts.isEmpty else { return [] }
         var collected: [Library] = []
+
+        // Lite libraries (local SwiftData) first — cheap, no network.
+        let localAccounts = appState.accounts.filter { $0.kind == .local }
+        if !localAccounts.isEmpty {
+            let context = ModelContext(modelContext.container)
+            for account in localAccounts {
+                let accountID = account.id
+                let accountName = account.name
+                let descriptor = FetchDescriptor<PersistedLibrary>(
+                    predicate: #Predicate { $0.serverAccountID == accountID && $0.deletedAt == nil }
+                )
+                if let rows = try? context.fetch(descriptor) {
+                    collected.append(contentsOf: rows.map {
+                        $0.toLibrary(serverAccountID: accountID, accountName: accountName)
+                    })
+                }
+            }
+        }
+
+        // Remote accounts via api fan-out.
+        let remoteAccounts = appState.accounts.filter { $0.kind == .remote }
+        guard !remoteAccounts.isEmpty else { return collected }
         await withTaskGroup(of: [Library].self) { group in
-            for account in accounts {
+            for account in remoteAccounts {
                 group.addTask {
                     let client = await appState.makeClient(serverURL: account.url)
                     guard var libs = try? await LibraryService(client: client).list() else {
@@ -1260,21 +1407,40 @@ struct RedesignedScanResultView: View {
         let lookupISBN10 = isbn.count == 10 ? isbn : (lookup?.isbn10 ?? "")
         let candidates = Set([isbn, lookupISBN13, lookupISBN10].filter { !$0.isEmpty })
 
-        await withTaskGroup(of: (String, Bool).self) { group in
+        await withTaskGroup(of: (String, OwnedMatch?).self) { group in
             for library in libraries {
                 group.addTask {
+                    // Local (Lite) libraries — query SwiftData for an
+                    // existing book whose primary edition matches one
+                    // of the candidate ISBNs.
+                    if library.serverURL.hasPrefix("local://") {
+                        let match = await Self.localOwnsISBN(
+                            library: library,
+                            candidates: candidates,
+                            modelContainer: modelContext.container
+                        )
+                        return (library.clientKey, match)
+                    }
                     let client = await appState.makeClient(serverURL: library.serverURL)
                     let svc = BookService(client: client)
                     for candidate in candidates {
-                        if (try? await svc.byISBN(libraryId: library.id, isbn: candidate)) != nil {
-                            return (library.clientKey, true)
+                        guard let book = try? await svc.byISBN(libraryId: library.id, isbn: candidate) else {
+                            continue
                         }
+                        // The copy count lives on the edition, not the
+                        // book, so it needs a second call. Only runs on
+                        // a hit, which is the rare case.
+                        let editions = (try? await svc.editions(libraryId: library.id, bookId: book.id)) ?? []
+                        let copies = editions.first(where: { $0.isPrimary })?.copyCount
+                            ?? editions.first?.copyCount
+                            ?? 1
+                        return (library.clientKey, OwnedMatch(bookId: book.id, copyCount: copies))
                     }
-                    return (library.clientKey, false)
+                    return (library.clientKey, nil)
                 }
             }
-            for await (key, owned) in group {
-                ownership[key] = owned
+            for await (key, match) in group {
+                ownership[key] = match
             }
         }
 
@@ -1285,6 +1451,27 @@ struct RedesignedScanResultView: View {
         isAdding = true
         addError = nil
         defer { isAdding = false }
+
+        // Lite library? Write to SwiftData and we're done.
+        if library.serverURL.hasPrefix("local://"),
+           let account = appState.accounts.first(where: { $0.kind == .local && $0.url == library.serverURL }) {
+            let picked = mediaTypesByServer[library.serverURL]?
+                .first(where: { $0.id == selectedMediaTypeID })
+            let writer = LiteBookWriter(modelContainer: modelContext.container)
+            _ = writer.add(
+                lookup: lookup,
+                to: library,
+                serverAccountID: account.id,
+                mediaType: picked?.displayName ?? "Book",
+                readStatus: selectedStatus.apiValue
+            )
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            addedSuccess = true
+            try? await Task.sleep(for: .milliseconds(700))
+            onScanAnother()
+            return
+        }
+
         let client = appState.makeClient(serverURL: library.serverURL)
 
         // Use the user's picked media type when set; otherwise fall back
@@ -1354,6 +1541,92 @@ struct RedesignedScanResultView: View {
             return primary
         }
         return appState.accounts.first
+    }
+
+    /// Synthetic media-type catalog for Lite libraries. Server-backed
+    /// libraries get the same list via `MediaTypeService.list`, which
+    /// has UUIDs from the database; for Lite we don't need persistent
+    /// ids since the books we add carry the mediaType string directly
+    /// on PersistedBook. Names match the api's defaults so a future
+    /// "promote Lite to self-hosted" flow can map cleanly.
+    private static let liteMediaTypes: [MediaType] = [
+        MediaType(id: "lite-book", name: "book", displayName: "Book"),
+        MediaType(id: "lite-manga", name: "manga", displayName: "Manga"),
+        MediaType(id: "lite-comic", name: "comic", displayName: "Comic"),
+        MediaType(id: "lite-graphic-novel", name: "graphic_novel", displayName: "Graphic novel"),
+        MediaType(id: "lite-audiobook", name: "audiobook", displayName: "Audiobook"),
+    ]
+
+    /// Check the SwiftData book cache for an edition matching any of
+    /// the candidate ISBNs in this Lite library. Walks cached books'
+    /// primary editions via EditionCache. Bounded by the library size;
+    /// fine for the offline scale.
+    private static func localOwnsISBN(
+        library: Library,
+        candidates: Set<String>,
+        modelContainer: ModelContainer
+    ) async -> OwnedMatch? {
+        let bookCache = BookCache(modelContainer: modelContainer)
+        let editionCache = EditionCache(modelContainer: modelContainer)
+        for book in bookCache.books(for: library) {
+            let editions = editionCache.editions(for: library, bookId: book.id)
+            for edition in editions {
+                if candidates.contains(edition.isbn13) || candidates.contains(edition.isbn10) {
+                    return OwnedMatch(bookId: book.id, copyCount: edition.copyCount)
+                }
+            }
+        }
+        return nil
+    }
+
+    enum LookupOutcome {
+        case success(ISBNLookupResult)
+        case notFound
+        case failed(String)
+    }
+
+    /// Resolve an ISBN to metadata. Tries the api LookupService when a
+    /// remote account is available, falls back to Open Library on api
+    /// failure or when there's no server at all. Returns a typed
+    /// outcome so the UI can distinguish "no metadata for this ISBN"
+    /// from "we couldn't reach anything".
+    private static func lookupMetadata(
+        isbn: String,
+        account: ServerAccount?,
+        appState: AppState
+    ) async -> LookupOutcome {
+        // Path 1: api LookupService when we have a remote account.
+        if let account {
+            let client = await appState.makeClient(serverURL: account.url)
+            if let results = try? await LookupService(client: client).isbn(isbn),
+               let match = results.first(where: { !$0.title.isEmpty }) {
+                return .success(match)
+            }
+            // Server returned but didn't find anything, or threw —
+            // fall through to the on-device providers before giving up.
+        }
+        // Path 2: on-device providers, in the priority order the user
+        // configured. Goes through the aggregator rather than calling
+        // Open Library directly so a scan honours the same settings a
+        // metadata refresh does; scanning used to always say "Open
+        // Library" even with Hardcover enabled.
+        let providers = LiteMetadataSettings.activeProviders
+        guard !providers.isEmpty else {
+            return .failed("No metadata sources are enabled. Turn one on in Settings → Metadata sources.")
+        }
+        let outcome = await LiteMetadataAggregator(providers: providers).lookupDetailed(isbn: isbn)
+        let named = outcome.results.filter { !$0.title.isEmpty }
+        if let merged = LiteMetadataAggregator.merge(named) {
+            return .success(merged)
+        }
+        // Every provider threw, so nothing was actually asked. Saying
+        // "no match" here would send the user hunting for a bad barcode
+        // when the real problem is the network.
+        if outcome.allFailed {
+            let names = providers.map(\.displayName).joined(separator: " or ")
+            return .failed("Couldn't reach \(names) to look up this ISBN.")
+        }
+        return .notFound
     }
 
     /// Account to hit for ISBN lookups. Provider-based, so any remote

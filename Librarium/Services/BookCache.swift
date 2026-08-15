@@ -147,8 +147,14 @@ struct BookCache {
     private static func prefetchCovers(for books: [Book], serverURL: String, accessToken: String?) async {
         await withTaskGroup(of: Void.self) { group in
             for book in books {
-                guard let path = book.coverUrl, !path.isEmpty,
-                      let url = URL(string: serverURL + path) else { continue }
+                guard let path = book.coverUrl, !path.isEmpty else { continue }
+                let url: URL?
+                if path.hasPrefix("http://") || path.hasPrefix("https://") {
+                    url = URL(string: path)
+                } else {
+                    url = URL(string: serverURL + path)
+                }
+                guard let url else { continue }
                 group.addTask {
                     await CoverCache.shared.prefetch(url: url, accessToken: accessToken)
                 }

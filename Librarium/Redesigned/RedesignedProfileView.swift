@@ -20,6 +20,7 @@ struct RedesignedProfileView: View {
     @State private var vm = RedesignedProfileViewModel()
     @State private var showAddServer = false
     @State private var showTelemetrySettings = false
+    @State private var showMetadataSources = false
     @State private var manageAccount: ServerAccount?
     @State private var confirmRemove: ServerAccount?
     @State private var confirmSignOut = false
@@ -63,6 +64,12 @@ struct RedesignedProfileView: View {
         .sheet(isPresented: $showTelemetrySettings) {
             NavigationStack {
                 TelemetrySettingsView()
+            }
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showMetadataSources) {
+            NavigationStack {
+                LiteMetadataSourcesView()
             }
             .presentationDragIndicator(.visible)
         }
@@ -218,6 +225,26 @@ struct RedesignedProfileView: View {
                     Divider().background(Theme.Colors.appLine)
                 }
                 addServerRow
+                // Signing out of everything is a server action, so it
+                // belongs with the servers rather than under App.
+                //
+                // Gated on remote accounts specifically: `logout()` clears
+                // `accounts` wholesale, so offering this to a Lite-only
+                // install would strand its PersistedLibrary/PersistedBook
+                // rows with no account to reach them, and a Lite book
+                // exists nowhere else.
+                if appState.accounts.contains(where: { $0.kind == .remote }) {
+                    Divider().background(Theme.Colors.appLine)
+                    appRow(
+                        icon: "rectangle.portrait.and.arrow.right",
+                        iconBg: Color(hex: 0x3a1d1d),
+                        label: "Sign out of all servers",
+                        right: nil,
+                        labelColor: Theme.Colors.bad
+                    ) {
+                        confirmSignOut = true
+                    }
+                }
             }
         }
     }
@@ -363,14 +390,17 @@ struct RedesignedProfileView: View {
                     }
                     Divider().background(Theme.Colors.appLine)
                 }
+                // Sits under Account & security because it is the same
+                // kind of thing: a setting for this device, not for a
+                // server. Only affects local libraries, which the screen
+                // itself says.
                 appRow(
-                    icon: "rectangle.portrait.and.arrow.right",
-                    iconBg: Color(hex: 0x3a1d1d),
-                    label: "Sign out of all servers",
-                    right: nil,
-                    labelColor: Theme.Colors.bad
+                    icon: "books.vertical.fill",
+                    iconBg: Color(hex: 0x1d3a2a),
+                    label: "Metadata sources",
+                    right: AnyView(Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.Colors.appText3))
                 ) {
-                    confirmSignOut = true
+                    showMetadataSources = true
                 }
                 Divider().background(Theme.Colors.appLine)
                 appRow(

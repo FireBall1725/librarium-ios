@@ -364,8 +364,7 @@ struct RedesignedSearchView: View {
     // MARK: - Helpers
 
     private func bookCoverURL(for result: BookSearchResult) -> URL? {
-        guard let path = result.book.coverUrl, !path.isEmpty else { return nil }
-        return URL(string: result.library.serverURL + path)
+        result.library.coverURL(for: result.book.coverUrl)
     }
 
     private func bookSubtitle(for result: BookSearchResult, author: String?) -> String {
@@ -574,7 +573,8 @@ final class RedesignedSearchViewModel {
         }
 
         let allRemote = appState.accounts.filter { $0.kind == .remote }
-        guard !allRemote.isEmpty else {
+        let allLocal = appState.accounts.filter { $0.kind == .local }
+        guard !allRemote.isEmpty || !allLocal.isEmpty else {
             bookResults = []
             seriesResults = []
             contributorResults = []
@@ -583,6 +583,30 @@ final class RedesignedSearchViewModel {
 
         isLoading = true
         defer { isLoading = false }
+
+        // Lite accounts always search locally — no network involved, so
+        // run them up front and accumulate alongside whichever remote
+        // path we end up taking below.
+        var liteBooks: [BookSearchResult] = []
+        for account in allLocal {
+            liteBooks.append(contentsOf: Self.liteBookSearch(
+                account: account,
+                query: trimmed,
+                modelContainer: modelContainer
+            ))
+        }
+
+        // Lite-only install — skip the remote fan-out entirely so we
+        // don't sit on a guard rejecting an empty `remotes` list below
+        // and zero out the Lite hits we already found.
+        if allRemote.isEmpty {
+            bookResults = liteBooks.sorted {
+                $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending
+            }
+            seriesResults = []
+            contributorResults = []
+            return
+        }
 
         // Offline / unreachable-server path runs FIRST and ignores
         // `needsReauth`: cached search hits should surface regardless
@@ -607,7 +631,7 @@ final class RedesignedSearchViewModel {
                 )
                 offlineSeries.append(contentsOf: series)
             }
-            bookResults = offlineBooks.sorted {
+            bookResults = (offlineBooks + liteBooks).sorted {
                 $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending
             }
             seriesResults = offlineSeries.sorted {
@@ -672,7 +696,7 @@ final class RedesignedSearchViewModel {
             }
         }
 
-        bookResults = allBooks.sorted { $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending }
+        bookResults = (allBooks + liteBooks).sorted { $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending }
         seriesResults = allSeries.sorted { $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending }
         contributorResults = allContribs
     }
@@ -709,6 +733,52 @@ final class RedesignedSearchViewModel {
     /// the result set. Each match is stamped with whatever cached
     /// library metadata we have; if none, we fabricate a minimal
     /// `Library` so the detail nav still has serverURL + libraryId.
+    /// Lite-mode books-only search. Mirrors `offlineBookSearch` but
+    /// resolves library metadata from `PersistedLibrary` instead of
+    /// `LibraryOfflineStore`, since Lite libraries never round-trip
+    /// through the remote-library cache.
+    private static func liteBookSearch(
+        account: ServerAccount,
+        query: String,
+        modelContainer: ModelContainer
+    ) -> [BookSearchResult] {
+        let serverURL = ServerAccount.localURL(for: account.id)
+        let cache = BookCache(modelContainer: modelContainer)
+        let books = cache.searchAllBooks(serverURL: serverURL, query: query)
+        guard !books.isEmpty else { return [] }
+
+        let context = ModelContext(modelContainer)
+        let accountID = account.id
+        let descriptor = FetchDescriptor<PersistedLibrary>(
+            predicate: #Predicate { $0.serverAccountID == accountID && $0.deletedAt == nil }
+        )
+        let rows = (try? context.fetch(descriptor)) ?? []
+        let libsByID: [String: Library] = Dictionary(
+            uniqueKeysWithValues: rows.map { row in
+                (row.id.uuidString, row.toLibrary(serverAccountID: accountID, accountName: account.name))
+            }
+        )
+
+        return books.map { book in
+            var lib = libsByID[book.libraryId] ?? Library(
+                id: book.libraryId,
+                name: "Library",
+                description: "",
+                slug: "",
+                ownerId: "local",
+                isPublic: false,
+                createdAt: "",
+                updatedAt: "",
+                bookCount: nil,
+                readingCount: nil,
+                readCount: nil
+            )
+            lib.serverURL = serverURL
+            lib.serverName = account.name
+            return BookSearchResult(book: book, library: lib)
+        }
+    }
+
     private static func offlineBookSearch(
         serverURL: String,
         serverName: String,

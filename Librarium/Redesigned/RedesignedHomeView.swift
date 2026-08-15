@@ -37,18 +37,27 @@ final class RedesignedHomeViewModel {
     var currentlyReading: [DashboardBook] = []
     var recentlyFinished: [DashboardBook] = []
     var stats: DashboardStats?
+    /// Remote-only stats, kept apart from the displayed `stats` so the
+    /// Lite merge always adds to a clean remote total instead of to a
+    /// number that already includes the last merge.
+    private var remoteStats: DashboardStats?
     var isLoading = true
     var error: String?
 
     /// Fan-out load across every remote account. Each account contributes
     /// its own dashboard slice; we tag each row with the source server so
     /// covers + detail nav can route back to the right api. Lite accounts
-    /// have no api endpoints, so they're skipped — when their book store
-    /// lands (PR2) we'll layer a SwiftData-derived contribution onto the
-    /// same merged arrays.
+    /// contribute a SwiftData-derived slice via `loadLite` and the
+    /// results merge into the same arrays as the remote fan-out, so a
+    /// mixed (remote + Lite) install sees both on one screen.
     func load(appState: AppState, modelContainer: ModelContainer) async {
         isLoading = true
         defer { isLoading = false }
+
+        // Lite contribution — always run, no network. Computed up front so
+        // both the offline and online branches can fold it in.
+        let allLocal = appState.accounts.filter { $0.kind == .local }
+        let liteSlice = Self.loadLite(locals: allLocal, modelContainer: modelContainer)
 
         // Offline / unreachable-server path runs FIRST and ignores
         // `needsReauth` — the user can't re-auth while offline, but
@@ -57,14 +66,18 @@ final class RedesignedHomeViewModel {
         let offline = !allRemote.isEmpty && allRemote.allSatisfy { NetworkMonitor.shared.shouldSkipAPI(for: $0.url) }
         if offline {
             await loadOffline(remotes: allRemote, modelContainer: modelContainer)
+            // Merge Lite into the offline result so a mixed install
+            // sees its local books alongside the cached remote ones.
+            mergeLite(liteSlice)
             return
         }
 
         let remotes = allRemote.filter { !$0.needsReauth }
         guard !remotes.isEmpty else {
-            currentlyReading = []
-            recentlyFinished = []
-            stats = nil
+            currentlyReading = liteSlice.currentlyReading
+            recentlyFinished = liteSlice.recentlyFinished
+            remoteStats = nil
+            stats = liteSlice.stats
             // Don't surface an error for a Lite-only install — the empty
             // home screen is the expected state, not a failure.
             error = appState.accounts.isEmpty ? "No servers signed in." : nil
@@ -118,8 +131,121 @@ final class RedesignedHomeViewModel {
         if anySucceeded {
             currentlyReading = aggregatedReading
             recentlyFinished = aggregatedFinished
+            remoteStats = aggregatedStats
             stats = aggregatedStats
         }
+        // Always fold in the Lite slice — even when no remote came back
+        // we still want local books on the home screen.
+        mergeLite(liteSlice)
+    }
+
+    /// Compute the Lite contribution to the home dashboard from
+    /// `PersistedBook`. Reads `reading` and `read` rows per Lite
+    /// account, resolves library names via `PersistedLibrary`, and
+    /// counts up basic stats so a Lite-only install gets meaningful
+    /// numbers in the stats card.
+    private static func loadLite(locals: [ServerAccount], modelContainer: ModelContainer) -> DashboardSlice {
+        guard !locals.isEmpty else {
+            return DashboardSlice(currentlyReading: [], recentlyFinished: [], stats: nil)
+        }
+        let cache = BookCache(modelContainer: modelContainer)
+        var reading: [DashboardBook] = []
+        var finished: [DashboardBook] = []
+        var totalBooks = 0
+        var booksRead = 0
+        var booksReading = 0
+
+        for account in locals {
+            let serverURL = ServerAccount.localURL(for: account.id)
+            let context = ModelContext(modelContainer)
+            let accountID = account.id
+            let libDescriptor = FetchDescriptor<PersistedLibrary>(
+                predicate: #Predicate { $0.serverAccountID == accountID && $0.deletedAt == nil }
+            )
+            let libs = (try? context.fetch(libDescriptor)) ?? []
+            let libsByID = Dictionary(uniqueKeysWithValues: libs.map { ($0.id.uuidString, $0.name) })
+
+            let readingBooks = cache.booksByReadStatus(serverURL: serverURL, statuses: ["reading"], limit: 20)
+            let finishedBooks = cache.booksByReadStatus(serverURL: serverURL, statuses: ["read"], limit: 20)
+
+            reading.append(contentsOf: readingBooks.map {
+                makeLiteDashboardBook($0, libsByID: libsByID, account: account)
+            })
+            finished.append(contentsOf: finishedBooks.map {
+                makeLiteDashboardBook($0, libsByID: libsByID, account: account)
+            })
+
+            // Counts come from a fresh fetch so they aren't capped at the
+            // 20-row limit above. Cheap — Lite catalogs are small.
+            let bookDescriptor = FetchDescriptor<PersistedBook>(
+                predicate: #Predicate { $0.serverURL == serverURL }
+            )
+            let allLocalBooks = (try? context.fetch(bookDescriptor)) ?? []
+            totalBooks += allLocalBooks.count
+            booksRead += allLocalBooks.filter { $0.readStatus == "read" }.count
+            booksReading += allLocalBooks.filter { $0.readStatus == "reading" }.count
+        }
+
+        let stats: DashboardStats? = totalBooks == 0 ? nil : DashboardStats(
+            totalBooks: totalBooks,
+            booksRead: booksRead,
+            booksReading: booksReading,
+            booksAddedThisYear: 0,
+            booksReadThisYear: 0,
+            favoritesCount: 0,
+            monthlyReads: []
+        )
+        return DashboardSlice(currentlyReading: reading, recentlyFinished: finished, stats: stats)
+    }
+
+    private static func makeLiteDashboardBook(_ book: Book, libsByID: [String: String], account: ServerAccount) -> DashboardBook {
+        let primaryAuthor = book.contributors
+            .first(where: { $0.role.caseInsensitiveCompare("author") == .orderedSame })?.name
+            ?? book.contributors.first?.name
+            ?? ""
+        let libraryName = libsByID[book.libraryId] ?? "Library"
+        return DashboardBook(
+            bookId: book.id,
+            libraryId: book.libraryId,
+            libraryName: libraryName,
+            title: book.title,
+            coverUrl: book.coverUrl,
+            authors: primaryAuthor,
+            readStatus: book.userReadStatus ?? "unread",
+            updatedAt: "",
+            serverURL: ServerAccount.localURL(for: account.id),
+            serverName: account.name
+        )
+    }
+
+    /// Merge a pre-computed Lite slice into the currently displayed
+    /// dashboard. Keeps Lite books at the end of the reading/finished
+    /// lists (remote results sort by `updatedAt`; Lite doesn't carry
+    /// that field so just append), and sums the stats counters when
+    /// both halves have data.
+    /// Fold the Lite rows into whatever the remote paths produced.
+    ///
+    /// Drops any Lite rows already present before appending. The remote
+    /// paths only overwrite `currentlyReading` when a server actually
+    /// answered, so on a Lite-only install, or any refresh where no
+    /// remote came back, the arrays still hold the previous run's rows
+    /// and a plain append added a second copy of every local book. Same
+    /// for stats, which were being merged into an already-merged total
+    /// and so climbed on every refresh.
+    private func mergeLite(_ slice: DashboardSlice) {
+        currentlyReading.removeAll { $0.serverURL.hasPrefix("local://") }
+        recentlyFinished.removeAll { $0.serverURL.hasPrefix("local://") }
+        currentlyReading.append(contentsOf: slice.currentlyReading)
+        recentlyFinished.append(contentsOf: slice.recentlyFinished)
+        // Always rebuilt from the remote total rather than the current
+        // displayed value, so re-merging cannot double-count.
+        stats = Self.merge(remoteStats, slice.stats)
+    }
+
+    private struct DashboardSlice {
+        let currentlyReading: [DashboardBook]
+        let recentlyFinished: [DashboardBook]
+        let stats: DashboardStats?
     }
 
     /// Build the dashboard from cached PersistedBook rows. Per remote
@@ -154,6 +280,8 @@ final class RedesignedHomeViewModel {
 
         currentlyReading = reading
         recentlyFinished = finished
+        // Cache-only path has no server aggregation to show.
+        remoteStats = nil
         stats = nil
         error = nil
     }
@@ -237,6 +365,8 @@ struct RedesignedHomeView: View {
     @State private var pendingDetail: BookDetailRequest?
     @State private var loadedDetail: BookDetailLoaded?
     @State private var showProfile = false
+    /// Coalesces bursts of Lite write notifications into one reload.
+    @State private var liteReloadTask: Task<Void, Never>?
     @State private var reauthAccount: ServerAccount?
 
     var body: some View {
@@ -280,6 +410,21 @@ struct RedesignedHomeView: View {
             }
             .task(id: appState.accounts.map(\.id)) { await vm.load(appState: appState, modelContainer: modelContext.container) }
             .refreshable { await vm.load(appState: appState, modelContainer: modelContext.container) }
+            // Lite writes (scan or manual add) bump the home dashboard so
+            // a freshly-added "reading" book lands on the tile row without
+            // a manual pull-to-refresh.
+            // Coalesced: a rating drag or a run of status taps posts
+            // this on every write, and vm.load fans out to the remote
+            // dashboard APIs. Without the delay one slider gesture fired
+            // a burst of full network reloads.
+            .onReceive(NotificationCenter.default.publisher(for: .liteLibraryDidChange)) { _ in
+                liteReloadTask?.cancel()
+                liteReloadTask = Task {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else { return }
+                    await vm.load(appState: appState, modelContainer: modelContext.container)
+                }
+            }
             .navigationDestination(item: $loadedDetail) { detail in
                 RedesignedBookDetailView(library: detail.library, book: detail.book)
             }
@@ -623,9 +768,14 @@ struct RedesignedHomeView: View {
 
     private func coverURL(for book: DashboardBook) -> URL? {
         guard let path = book.coverUrl, !path.isEmpty else { return nil }
-        // The book carries the server it came from; falling back to primary
-        // would silently cross-render covers when the user has multiple
+        // Lite-mode and Open-Library-sourced books carry absolute URLs;
+        // server-emitted covers are relative paths that need joining
+        // with the source server URL. Falling back to primary would
+        // silently cross-render covers when the user has multiple
         // servers signed in.
+        if path.hasPrefix("http://") || path.hasPrefix("https://") {
+            return URL(string: path)
+        }
         let base = book.serverURL.isEmpty
             ? RedesignedHomeViewModel.primaryAccount(appState: appState)?.url ?? ""
             : book.serverURL
