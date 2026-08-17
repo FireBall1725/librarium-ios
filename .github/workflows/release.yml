@@ -28,7 +28,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       next_dev: ${{ steps.version.outputs.next_dev }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
