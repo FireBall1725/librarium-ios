@@ -4,8 +4,6 @@ Native iOS client for **[Librarium](https://librarium.press)**, a self-hosted, p
 
 Swift · SwiftUI · iOS 26+. Talks to [`librarium-api`](https://github.com/fireball1725/librarium-api) over HTTP.
 
-Questions, updates, and works in progress: [FireBall Codes on Discord](https://discord.gg/QpV82CFfVD).
-
 > ⚠︎ **Early beta.** Things are changing fast, some edges are rough, and self-hosters should expect to read release notes before upgrading.
 
 Part of the Librarium stack:
@@ -147,6 +145,12 @@ The app connects to a self-hosted [librarium-api](https://github.com/fireball172
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). PRs must sign off on the [Developer Certificate of Origin](DCO) (`git commit -s`) — a CI check enforces this.
+
+## Support
+
+Questions, updates, and works in progress: [FireBall Codes on Discord](https://discord.gg/QpV82CFfVD).
+
+If this saved you some time, you can [buy me a sushi roll](https://ko-fi.com/fireball1725).
 
 ## License
 
