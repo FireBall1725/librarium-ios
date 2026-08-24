@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-/// Local SwiftData mirror of a server-side `user_book_interactions` row.
+/// Local SwiftData mirror of the caller's reading state for a work.
 ///
 /// Mirrors the server schema introduced in api migration 000018 +
 /// 000019: per-field timestamps for the four most-contested soft fields
@@ -19,6 +19,22 @@ final class PersistedInteraction {
     /// unique so SwiftData can dedupe on inserts driven by sync ops.
     @Attribute(.unique) var id: UUID
     var serverAccountID: UUID
+
+    /// Which work this is about.
+    ///
+    /// Reading state belongs to the work, not to a printing: a reader who owns
+    /// two editions of one book has one opinion of it, and asking which
+    /// paperback they meant was a question with no answer.
+    ///
+    /// Optional only so the store migrates in place. A row written before this
+    /// existed has none until the backfill fills it in from the edition below,
+    /// and treating that as "not yet known" is what lets an install upgrade
+    /// without losing anything queued offline.
+    var bookID: UUID?
+
+    /// The printing this row was keyed to before reading state moved to the
+    /// work. Kept so the backfill has something to map from, and so a row
+    /// written by an older build is still findable while it waits.
     var bookEditionID: UUID
 
     var rating: Int?
@@ -47,6 +63,7 @@ final class PersistedInteraction {
         id: UUID,
         serverAccountID: UUID,
         bookEditionID: UUID,
+        bookID: UUID? = nil,
         readStatus: String = "unread",
         isFavorite: Bool = false,
         updatedAt: Date
@@ -54,6 +71,7 @@ final class PersistedInteraction {
         self.id = id
         self.serverAccountID = serverAccountID
         self.bookEditionID = bookEditionID
+        self.bookID = bookID
         self.readStatus = readStatus
         self.isFavorite = isFavorite
         self.updatedAt = updatedAt

@@ -14,9 +14,13 @@ import SwiftData
 /// returns later has its own timestamp and will overtake whatever the
 /// backfill set, exactly as last-write-wins intends.
 enum SyncBackfill {
+    /// - Parameter bookID: which work this is about. Passed in rather than read
+    ///   off the DTO because the per-edition read surface does not carry it,
+    ///   and the caller always knows the book it is showing.
     static func writeInteraction(
         _ dto: UserBookInteraction,
         serverAccountID: UUID,
+        bookID: UUID? = nil,
         in context: ModelContext
     ) {
         guard let id = UUID(uuidString: dto.id),
@@ -27,15 +31,38 @@ enum SyncBackfill {
         let descriptor = FetchDescriptor<PersistedInteraction>(
             predicate: #Predicate { $0.id == id }
         )
-        let existing = (try? context.fetch(descriptor))?.first
+        var existing = (try? context.fetch(descriptor))?.first
+
+        // Nothing under that id, but perhaps something under this book.
+        //
+        // The server minted new row ids when reading state moved to the work,
+        // so a store written before the upgrade holds the old one. Inserting
+        // alongside it would leave two rows for one book, and the view takes
+        // whichever comes back first. Adopt the new id instead: the row keeps
+        // its pending local edits and starts matching the ops the server sends.
+        if existing == nil, let bookID {
+            let byBook = FetchDescriptor<PersistedInteraction>(
+                predicate: #Predicate<PersistedInteraction> {
+                    $0.bookID == bookID && $0.id != id
+                }
+            )
+            if let stale = (try? context.fetch(byBook))?.first {
+                stale.id = id
+                existing = stale
+            }
+        }
 
         if let row = existing {
+            // Filled in on the way past. A row written by an older build has no
+            // book, and this is the read that knows which one it is.
+            if row.bookID == nil { row.bookID = bookID }
             applyInto(row, from: dto, updatedAt: updatedAt)
         } else {
             let row = PersistedInteraction(
                 id: id,
                 serverAccountID: serverAccountID,
                 bookEditionID: bookEditionID,
+                bookID: bookID,
                 readStatus: dto.readStatus,
                 isFavorite: dto.isFavorite,
                 updatedAt: updatedAt

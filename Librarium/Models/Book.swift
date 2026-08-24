@@ -141,6 +141,79 @@ struct BookSeriesRef: Codable, Hashable {
 
 // MARK: - UserBookInteraction
 
+/// What one person thinks of a work.
+///
+/// Keyed to the book rather than to a printing: an opinion is about the story,
+/// not about which paperback it was read in, so it does not change when a
+/// second edition is added.
+///
+/// Every field is decoded permissively. A book nobody has said anything about
+/// comes back as the default rather than a 404, because 404 would make every
+/// unread book look like a broken link.
+struct MyBook: Codable {
+    /// The row id the sync outbox addresses ops by. Empty for a book nobody has
+    /// said anything about: there is no row yet, and an invented id would have
+    /// offline edits queued against one that does not exist.
+    let id: String
+    let bookId: String
+    let readStatus: String
+    let rating: Double?
+    let isFavorite: Bool
+    let review: String
+    let notes: String
+    let wants: Bool
+
+    /// True when the status came from a container the caller has read, an
+    /// omnibus holding this volume, rather than from anything said about this
+    /// book. An inherited status carries no rating: a rating is an opinion
+    /// about the thing rated and never moves through containment.
+    let inherited: Bool
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id         = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        bookId     = try c.decode(String.self, forKey: .bookId)
+        readStatus = try c.decodeIfPresent(String.self, forKey: .readStatus) ?? "unread"
+        rating     = try c.decodeIfPresent(Double.self, forKey: .rating)
+        isFavorite = try c.decodeIfPresent(Bool.self,   forKey: .isFavorite) ?? false
+        review     = try c.decodeIfPresent(String.self, forKey: .review)     ?? ""
+        notes      = try c.decodeIfPresent(String.self, forKey: .notes)      ?? ""
+        wants      = try c.decodeIfPresent(Bool.self,   forKey: .wants)      ?? false
+        inherited  = try c.decodeIfPresent(Bool.self,   forKey: .inherited)  ?? false
+    }
+}
+
+extension MyBook {
+    /// The per-edition shape, for the paths that still speak it.
+    ///
+    /// The local store and most of the detail view were built around
+    /// UserBookInteraction, so a work-keyed read is folded into that rather
+    /// than every one of them growing a second branch. The edition is the one
+    /// being displayed: reading state no longer belongs to it, but the row this
+    /// becomes is still found by it on a store written before the rekey.
+    ///
+    /// Dates are absent on purpose. They live on reading sessions now, and
+    /// inventing them here would put a finish date on a book whose session
+    /// nobody has read.
+    func asInteraction(editionID: String) -> UserBookInteraction {
+        UserBookInteraction(
+            id: id,
+            userId: "",
+            bookEditionId: editionID,
+            readStatus: readStatus,
+            rating: rating,
+            notes: notes,
+            review: review,
+            dateStarted: nil,
+            dateFinished: nil,
+            isFavorite: isFavorite,
+            rereadCount: 0,
+            createdAt: "",
+            updatedAt: ""
+        )
+    }
+}
+
 struct UserBookInteraction: Codable, Identifiable {
     let id: String
     let userId: String
