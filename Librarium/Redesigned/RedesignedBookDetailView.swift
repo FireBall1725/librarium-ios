@@ -43,6 +43,9 @@ struct RedesignedBookDetailView: View {
     /// offline cache, and a server too old for lists answers with those, folded
     /// into the same shape.
     @State private var bookLists: [SavedList] = []
+    /// The physical objects this book exists as. Empty on a server without
+    /// copies, which is why the section is hidden rather than shown as none.
+    @State private var copies: [Copy] = []
     @State private var seriesRefs: [BookSeriesRef] = []
     @State private var activeLoan: Loan?
     @State private var coverCacheBuster: Int = 0
@@ -125,6 +128,11 @@ struct RedesignedBookDetailView: View {
                     if !seriesRefs.isEmpty {
                         section(label: "Series") {
                             seriesList
+                        }
+                    }
+                    if !copies.isEmpty {
+                        section(label: copies.count == 1 ? "Copy" : "Copies (\(copies.count))") {
+                            copiesList
                         }
                     }
                     if !bookLists.isEmpty {
@@ -1270,6 +1278,53 @@ struct RedesignedBookDetailView: View {
         )
     }
 
+    /// The copies, one row each.
+    ///
+    /// Read-only here. Editing a copy is a form with a condition, a location
+    /// and a signed flag, and putting one behind every row of a detail view
+    /// would crowd out the book; the web client owns that until this app has a
+    /// screen for it.
+    private var copiesList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(copies) { copy in
+                HStack(spacing: 10) {
+                    Image(systemName: copy.isSigned ? "signature" : "book.closed")
+                        .font(.system(size: 15))
+                        .foregroundStyle(copy.isSigned ? Theme.Colors.gold : Theme.Colors.appText3)
+                        .frame(width: 22)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(CopyCondition.label(copy.condition))
+                            .font(Theme.Fonts.ui(14, weight: .medium))
+                            .foregroundStyle(Theme.Colors.appText)
+                        if !copy.locationName.isEmpty {
+                            Text(copy.locationName)
+                                .font(Theme.Fonts.ui(12))
+                                .foregroundStyle(Theme.Colors.appText3)
+                        }
+                    }
+
+                    Spacer()
+
+                    if copy.isLent {
+                        Text("Lent to \(copy.onLoanTo)")
+                            .font(Theme.Fonts.ui(12, weight: .medium))
+                            .foregroundStyle(Theme.Colors.gold)
+                    }
+                }
+                .padding(14)
+                if copy.id != copies.last?.id {
+                    Divider().background(Theme.Colors.appLine)
+                }
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Theme.Colors.appCard)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.Colors.appLine, lineWidth: 0.5))
+        )
+    }
+
     // MARK: - Reading history
 
     @ViewBuilder
@@ -1388,11 +1443,17 @@ struct RedesignedBookDetailView: View {
             // shelf read only ever returned those, and every private list a
             // reader made elsewhere was invisible here. A server without lists
             // still answers with shelves, folded into the same shape.
-            if await ServerCapabilities.shared.hasWorkKeyedReadingState(serverURL: library.serverURL),
-               let fetched = try? await ListService(client: client).listsHolding(bookId: currentBook.id) {
-                bookLists = fetched
+            if await ServerCapabilities.shared.hasWorkKeyedReadingState(serverURL: library.serverURL) {
+                if let fetched = try? await ListService(client: client).listsHolding(bookId: currentBook.id) {
+                    bookLists = fetched
+                }
+                copies = (try? await CopyService(client: client).copies(bookId: currentBook.id)) ?? []
             } else {
                 bookLists = shelves.map(\.asSavedList)
+                // Nothing to show rather than a wrong nothing: an older server
+                // has no copies to report, and an empty section would read as
+                // "you own none of this".
+                copies = []
             }
 
             // Write through to cache so the next offline visit (or the
