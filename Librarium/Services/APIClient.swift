@@ -20,6 +20,37 @@ enum APIError: LocalizedError {
     }
 }
 
+/// Who this client is, on every request that carries a session.
+///
+/// The server refuses first-party clients too old to understand the shapes it
+/// produces, and answers 426 with a readable message rather than letting them
+/// render blank panels that look like data loss. It cannot do that for a client
+/// that does not say who it is.
+///
+/// The version is read once rather than at each call site. Several views read
+/// the bundle themselves with their own `?? "?"` fallback; adding a fourth copy
+/// here would put the value the server gates on in the same bag as a label
+/// nobody checks.
+enum ClientIdentity {
+    static let header = "X-Librarium-Client"
+    static let versionHeader = "X-Librarium-Client-Version"
+    static let name = "ios"
+
+    /// `0.0.0-dev` for a local build, which the server exempts from gating, and
+    /// the injected `YY.M.R` for anything the release workflow produced.
+    static let version: String =
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0-dev"
+}
+
+extension URLRequest {
+    /// Stamps the client identity headers. Both request builders call this, so
+    /// a new one is the only way to end up sending a request without them.
+    mutating func setClientIdentity() {
+        setValue(ClientIdentity.name, forHTTPHeaderField: ClientIdentity.header)
+        setValue(ClientIdentity.version, forHTTPHeaderField: ClientIdentity.versionHeader)
+    }
+}
+
 final class APIClient {
     let baseURL: String
     var token: String?
@@ -94,6 +125,7 @@ final class APIClient {
         req.httpMethod = method
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        req.setClientIdentity()
 
         var body = Data()
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -139,6 +171,7 @@ final class APIClient {
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        req.setClientIdentity()
         req.httpBody = body
         // Default URLSession timeout is 60s. We trim to 10s so the
         // "server is down but network is up" path fails before the user
