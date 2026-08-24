@@ -26,6 +26,11 @@ struct RedesignedBookDetailView: View {
     @State private var editions: [BookEdition] = []
     @State private var selectedEditionID: String?
     @State private var interaction: UserBookInteraction?
+    /// The work-keyed answer, when this server has one. Held alongside rather
+    /// than instead of `interaction`: it carries `inherited`, which the
+    /// per-edition shape has no field for and which the view wants to say out
+    /// loud when a status came from an omnibus rather than from this book.
+    @State private var myBook: MyBook?
     /// Local SwiftData mirror of the primary edition's interaction.
     /// Source of truth for fields covered by the sync protocol
     /// (`isFavorite`, `rating`); other fields still come from
@@ -589,6 +594,33 @@ struct RedesignedBookDetailView: View {
         }
     }
 
+    /// The local row for this work.
+    ///
+    /// Prefers the book key and falls back to the edition. A row written before
+    /// reading state moved to the work has no book until a read fills it in, so
+    /// during that window the edition is the only way to find it, and losing
+    /// track of it would mean an offline edit sitting in the outbox against a
+    /// row the view no longer believes exists.
+    private func fetchPersisted(bookID: UUID, editionID: UUID?) -> PersistedInteraction? {
+        let byBook = FetchDescriptor<PersistedInteraction>(
+            predicate: #Predicate { $0.bookID == bookID }
+        )
+        if let row = (try? modelContext.fetch(byBook))?.first { return row }
+
+        guard let editionID else { return nil }
+        let byEdition = FetchDescriptor<PersistedInteraction>(
+            predicate: #Predicate { $0.bookEditionID == editionID }
+        )
+        guard let row = (try? modelContext.fetch(byEdition))?.first else { return nil }
+        // Found the old way, so record the answer rather than looking it up
+        // again on every open.
+        if row.bookID == nil {
+            row.bookID = bookID
+            try? modelContext.save()
+        }
+        return row
+    }
+
     /// Apply a new read-status through the outbox. Same pattern as
     /// toggleFavorite / applyRating: mutate PersistedInteraction first
     /// (source of truth), enqueue a PendingSyncOp, kick a background
@@ -852,7 +884,12 @@ struct RedesignedBookDetailView: View {
     private var statusPill: StatusPill {
         switch displayReadStatus {
         case "read":
-            return StatusPill(text: "Read", fg: Theme.Colors.good, bg: Color(hex: 0x7bd6a8, opacity: 0.18), dot: Theme.Colors.good)
+            // Said so rather than left to look like a mistake. A volume inside
+            // an omnibus the reader finished reads as Read without anyone
+            // having opened this book, and "Read in a collection" is the
+            // difference between that and a wrong answer.
+            let text = readStatusIsInherited ? "Read in a collection" : "Read"
+            return StatusPill(text: text, fg: Theme.Colors.good, bg: Color(hex: 0x7bd6a8, opacity: 0.18), dot: Theme.Colors.good)
         case "reading":
             return StatusPill(text: "Reading", fg: Theme.Colors.accentStrong, bg: Theme.Colors.accentSoft, dot: Theme.Colors.accent)
         case "want_to_read", "want-to-read":
@@ -891,6 +928,18 @@ struct RedesignedBookDetailView: View {
     private var displayReadStatus: String {
         if let p = persisted { return p.readStatus }
         return interaction?.readStatus ?? "unread"
+    }
+
+    /// Whether the status came from a collection holding this book rather than
+    /// from anything said about the book itself.
+    ///
+    /// Only a server that keys reading state to the work can answer this, and
+    /// only until the reader says something of their own: a local row means
+    /// they have, so it wins. Worth surfacing rather than hiding, because
+    /// "read" on a volume nobody opened otherwise looks like a mistake.
+    private var readStatusIsInherited: Bool {
+        guard persisted == nil else { return false }
+        return myBook?.inherited ?? false
     }
 
     /// Pages read pulled from the local progress JSON blob. nil when
@@ -1346,11 +1395,8 @@ struct RedesignedBookDetailView: View {
             // Local-first: read whatever PersistedInteraction we already
             // have so the UI populates instantly with the last-known
             // synced state. The api fetch + backfill below refreshes it.
-            if let editionID = UUID(uuidString: pe.id) {
-                let descriptor = FetchDescriptor<PersistedInteraction>(
-                    predicate: #Predicate { $0.bookEditionID == editionID }
-                )
-                persisted = (try? modelContext.fetch(descriptor))?.first
+            if let bookID = UUID(uuidString: currentBook.id) {
+                persisted = fetchPersisted(bookID: bookID, editionID: UUID(uuidString: pe.id))
             }
 
             // Online interaction refresh — skip when there's no api
@@ -1361,8 +1407,24 @@ struct RedesignedBookDetailView: View {
                 fetched = nil
             } else {
                 let client = appState.makeClient(serverURL: library.serverURL)
-                fetched = try? await BookService(client: client)
-                    .interaction(libraryId: library.id, bookId: currentBook.id, editionId: pe.id)
+                let service = BookService(client: client)
+
+                // Asked per server, not once for the app. This install may be
+                // connected to several instances on different versions, and a
+                // server without the work-keyed route answers 404, which would
+                // read as "you have not read this book" rather than as an old
+                // server.
+                if await ServerCapabilities.shared.hasWorkKeyedReadingState(serverURL: library.serverURL) {
+                    myBook = try? await service.myBook(bookId: currentBook.id)
+                    // The per-edition shape is what the rest of this view and
+                    // the local store still speak, so the work-keyed answer is
+                    // folded into it rather than duplicating every read path.
+                    fetched = myBook.map { $0.asInteraction(editionID: pe.id) }
+                } else {
+                    myBook = nil
+                    fetched = try? await service
+                        .interaction(libraryId: library.id, bookId: currentBook.id, editionId: pe.id)
+                }
             }
             interaction = fetched
 
@@ -1372,17 +1434,16 @@ struct RedesignedBookDetailView: View {
             // pending local change.
             if let dto = fetched,
                let account = appState.accounts.first(where: { $0.url == library.serverURL }) {
-                SyncBackfill.writeInteraction(dto, serverAccountID: account.id, in: modelContext)
+                SyncBackfill.writeInteraction(
+                    dto, serverAccountID: account.id,
+                    bookID: UUID(uuidString: currentBook.id), in: modelContext)
                 try? modelContext.save()
 
                 // If persisted was nil before (first interaction with
                 // this edition), backfill just created the row; pick
                 // it up now so the @State holds the canonical reference.
-                if persisted == nil, let editionID = UUID(uuidString: pe.id) {
-                    let descriptor = FetchDescriptor<PersistedInteraction>(
-                        predicate: #Predicate { $0.bookEditionID == editionID }
-                    )
-                    persisted = (try? modelContext.fetch(descriptor))?.first
+                if persisted == nil, let bookID = UUID(uuidString: currentBook.id) {
+                    persisted = fetchPersisted(bookID: bookID, editionID: UUID(uuidString: pe.id))
                 }
             }
         }
@@ -1426,11 +1487,17 @@ struct RedesignedBookDetailView: View {
             // forever. `editions` is already loaded on this view, and
             // PersistedBookEditions stores one payload blob rather than
             // per-edition rows, so this is the cheapest source of ids.
+            //
+            // Matched on the book as well as the editions: reading state is
+            // keyed to the work now, so a row rekeyed by a read would survive
+            // an edition-only sweep and sit orphaned forever, which is the
+            // exact bug this block exists to prevent.
             let editionIDs = Set(editions.compactMap { UUID(uuidString: $0.id) })
-            if !editionIDs.isEmpty {
+            let bookUUID = UUID(uuidString: book.id)
+            if !editionIDs.isEmpty || bookUUID != nil {
                 let interactions = try? context.fetch(FetchDescriptor<PersistedInteraction>(
                     predicate: #Predicate<PersistedInteraction> {
-                        editionIDs.contains($0.bookEditionID)
+                        editionIDs.contains($0.bookEditionID) || $0.bookID == bookUUID
                     }
                 ))
                 interactions?.forEach { context.delete($0) }

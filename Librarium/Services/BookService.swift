@@ -123,6 +123,28 @@ struct BookService {
         try await client.put("/api/v1/libraries/\(libraryId)/books/\(bookId)/editions/\(editionId)/my-interaction", body: body)
     }
 
+    // MARK: - Reading state, keyed to the work
+
+    /// The caller's reading state for a book.
+    ///
+    /// No library and no edition in the path: an opinion belongs to neither, so
+    /// a reader who owns two printings has one answer rather than two.
+    ///
+    /// Never returns nil the way the per-edition read did. A book nobody has
+    /// said anything about comes back as the default rather than a 404, because
+    /// 404 would make every unread book look like a broken link.
+    func myBook(bookId: String) async throws -> MyBook {
+        try await client.get("/api/v1/books/\(bookId)/me")
+    }
+
+    /// Writes only the fields named. Anything omitted keeps whatever another
+    /// device last wrote, which is what lets two clients edit different fields
+    /// without either losing.
+    @discardableResult
+    func updateMyBook(bookId: String, body: UpdateMyBookRequest) async throws -> MyBook {
+        try await client.put("/api/v1/books/\(bookId)/me", body: body)
+    }
+
     // MARK: - Book shelves / series
 
     func shelves(libraryId: String, bookId: String) async throws -> [Shelf] {
@@ -199,6 +221,20 @@ struct CreateEditionRequest: Encodable {
         case copyCount    = "copy_count"
         case isPrimary    = "is_primary"
     }
+}
+
+/// A partial write of reading state. Every field is optional: an omitted one
+/// is left alone, which is the whole reason the endpoint is a partial update.
+///
+/// `clearRating` is separate because omitting a rating means "no change", so
+/// one nullable field cannot say both "leave it" and "remove it".
+struct UpdateMyBookRequest: Encodable {
+    var readStatus: String?
+    var rating: Double?
+    var clearRating: Bool?
+    var isFavorite: Bool?
+    var review: String?
+    var notes: String?
 }
 
 struct UpdateInteractionRequest: Encodable {

@@ -13,6 +13,7 @@
 		7878506E6651377FA2979B78 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74B9EAFCC11908F2485DCC44 /* Foundation.framework */; };
 		B1AE2F969FFCBAE89ADC84B6 /* NormalizeServerURLTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B112BD5E7841F2F203A2A58 /* NormalizeServerURLTests.swift */; };
 		B1AE2F969FFCBAE89ADC84B7 /* GeneratedAvatarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B112BD5E7841F2F203A2A59 /* GeneratedAvatarTests.swift */; };
+		B1AE2F969FFCBAE89ADC84B8 /* ReadingStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B112BD5E7841F2F203A2A60 /* ReadingStateTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -30,6 +31,7 @@
 		00CB09DD2F8B98A60018CA13 /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
 		0B112BD5E7841F2F203A2A58 /* NormalizeServerURLTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NormalizeServerURLTests.swift; sourceTree = "<group>"; };
 		0B112BD5E7841F2F203A2A59 /* GeneratedAvatarTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeneratedAvatarTests.swift; sourceTree = "<group>"; };
+		0B112BD5E7841F2F203A2A60 /* ReadingStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReadingStateTests.swift; sourceTree = "<group>"; };
 		74B9EAFCC11908F2485DCC44 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		97099F52E3F070DABEB9ADCD /* LibrariumTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LibrariumTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A95A0F1EA1AA0B0A9A2D501 /* LibraryOrderStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LibraryOrderStoreTests.swift; sourceTree = "<group>"; };
@@ -111,6 +113,7 @@
 				9A95A0F1EA1AA0B0A9A2D501 /* LibraryOrderStoreTests.swift */,
 				0B112BD5E7841F2F203A2A58 /* NormalizeServerURLTests.swift */,
 				0B112BD5E7841F2F203A2A59 /* GeneratedAvatarTests.swift */,
+				0B112BD5E7841F2F203A2A60 /* ReadingStateTests.swift */,
 			);
 			path = LibrariumTests;
 			sourceTree = SOURCE_ROOT;
@@ -234,6 +237,7 @@
 				36318A62861A160EE562A569 /* LibraryOrderStoreTests.swift in Sources */,
 				B1AE2F969FFCBAE89ADC84B6 /* NormalizeServerURLTests.swift in Sources */,
 				B1AE2F969FFCBAE89ADC84B7 /* GeneratedAvatarTests.swift in Sources */,
+				B1AE2F969FFCBAE89ADC84B8 /* ReadingStateTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
