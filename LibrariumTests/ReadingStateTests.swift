@@ -74,3 +74,53 @@ final class ReadingStateTests: XCTestCase {
         await ServerCapabilities.shared.forgetAll()
     }
 }
+
+/// Lists reach further than shelves did: a shelf is a list shared with a
+/// library, so the shelf read never returned a private one.
+@MainActor
+final class SavedListTests: XCTestCase {
+    private func decode(_ json: String) throws -> SavedList {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return try d.decode(SavedList.self, from: Data(json.utf8))
+    }
+
+    func testDecodesAPrivateManualList() throws {
+        let list = try decode("""
+        {"id":"11111111-1111-1111-1111-111111111111","name":"Lent to James",
+         "description":"","icon":"lent","color":"","kind":"manual",
+         "visibility":"private","shared_library_id":null,"book_count":4,
+         "builtin_key":""}
+        """)
+        XCTAssertEqual(list.name, "Lent to James")
+        XCTAssertEqual(list.bookCount, 4)
+        XCTAssertFalse(list.isSmart)
+        XCTAssertNil(list.sharedLibraryId, "a private list belongs to no library")
+    }
+
+    /// A shelf answers the same question on a server too old for lists, so the
+    /// fold has to produce something the same view can render.
+    func testAShelfFoldsIntoAList() {
+        let shelf = Shelf(
+            id: "s1", libraryId: "lib1", name: "Signed", description: "",
+            color: "#ff0000", icon: "star", displayOrder: 0, bookCount: 3,
+            tags: [], createdAt: "", updatedAt: ""
+        )
+        let folded = shelf.asSavedList
+        XCTAssertEqual(folded.id, "s1")
+        XCTAssertEqual(folded.bookCount, 3)
+        XCTAssertEqual(folded.kind, "manual")
+        XCTAssertEqual(folded.visibility, "library",
+                       "a shelf is a list shared with a library, which is what made it visible")
+        XCTAssertEqual(folded.sharedLibraryId, "lib1")
+    }
+
+    /// The icon field holds two different things. Rendering a name as text drew
+    /// the literal word "star" for anything the web client made.
+    func testIconResolvesNamesButLeavesEmojiAlone() {
+        XCTAssertEqual(ListIcon.symbol(for: "star"), "star")
+        XCTAssertEqual(ListIcon.symbol(for: "lent"), "arrow.up.right")
+        XCTAssertNil(ListIcon.symbol(for: "📚"), "an emoji is not a name and must be drawn as itself")
+        XCTAssertNil(ListIcon.symbol(for: ""))
+    }
+}

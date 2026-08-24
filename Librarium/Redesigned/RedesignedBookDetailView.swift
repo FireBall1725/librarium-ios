@@ -37,6 +37,12 @@ struct RedesignedBookDetailView: View {
     /// `interaction` until they get their own sync columns.
     @State private var persisted: PersistedInteraction?
     @State private var shelves: [Shelf] = []
+    /// The lists holding this book, which is what the section renders.
+    ///
+    /// Separate from `shelves` rather than replacing it: shelves still feed the
+    /// offline cache, and a server too old for lists answers with those, folded
+    /// into the same shape.
+    @State private var bookLists: [SavedList] = []
     @State private var seriesRefs: [BookSeriesRef] = []
     @State private var activeLoan: Loan?
     @State private var coverCacheBuster: Int = 0
@@ -121,8 +127,8 @@ struct RedesignedBookDetailView: View {
                             seriesList
                         }
                     }
-                    if !shelves.isEmpty {
-                        section(label: "Shelves") {
+                    if !bookLists.isEmpty {
+                        section(label: "Lists") {
                             shelvesList
                         }
                     }
@@ -1233,17 +1239,26 @@ struct RedesignedBookDetailView: View {
     @ViewBuilder
     private var shelvesList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(shelves) { shelf in
+            ForEach(bookLists) { list in
                 HStack {
-                    Text(shelf.icon)
-                        .font(.system(size: 18))
-                    Text(shelf.name)
+                    // Drawn through ListIconView because the icon field holds
+                    // two different things: an emoji from before the named set,
+                    // or a name like "star" written by the web client. Rendering
+                    // it as text drew the literal word for the second kind.
+                    ListIconView(icon: list.icon, colour: list.color)
+                        .frame(width: 22)
+                    Text(list.name)
                         .font(Theme.Fonts.ui(14, weight: .medium))
                         .foregroundStyle(Theme.Colors.appText)
                     Spacer()
+                    if list.bookCount > 0 {
+                        Text("\(list.bookCount)")
+                            .font(Theme.Fonts.ui(13))
+                            .foregroundStyle(Theme.Colors.appText3)
+                    }
                 }
                 .padding(14)
-                if shelf.id != shelves.last?.id {
+                if list.id != bookLists.last?.id {
                     Divider().background(Theme.Colors.appLine)
                 }
             }
@@ -1355,6 +1370,9 @@ struct RedesignedBookDetailView: View {
         if NetworkMonitor.shared.shouldSkipAPI(for: library.serverURL) {
             editions = editionCache.editions(for: library, bookId: currentBook.id)
             shelves = shelfCache.shelves(for: library, bookId: currentBook.id)
+            // Offline shows what the cache holds, which is shelves. A private
+            // list has never been cached, so it is absent rather than wrong.
+            bookLists = shelves.map(\.asSavedList)
             seriesRefs = []
         } else {
             let client = appState.makeClient(serverURL: library.serverURL)
@@ -1365,6 +1383,17 @@ struct RedesignedBookDetailView: View {
             editions = (try? await e) ?? editionCache.editions(for: library, bookId: currentBook.id)
             shelves = (try? await s) ?? shelfCache.shelves(for: library, bookId: currentBook.id)
             seriesRefs = (try? await sr) ?? []
+
+            // Asked per server. A shelf is a list shared with a library, so the
+            // shelf read only ever returned those, and every private list a
+            // reader made elsewhere was invisible here. A server without lists
+            // still answers with shelves, folded into the same shape.
+            if await ServerCapabilities.shared.hasWorkKeyedReadingState(serverURL: library.serverURL),
+               let fetched = try? await ListService(client: client).listsHolding(bookId: currentBook.id) {
+                bookLists = fetched
+            } else {
+                bookLists = shelves.map(\.asSavedList)
+            }
 
             // Write through to cache so the next offline visit (or the
             // next unreachable-server tap) has fresh data without
