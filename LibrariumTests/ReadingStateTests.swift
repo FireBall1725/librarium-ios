@@ -124,3 +124,47 @@ final class SavedListTests: XCTestCase {
         XCTAssertNil(ListIcon.symbol(for: ""))
     }
 }
+
+/// A copy is an object, not a count. The decode has to survive the states the
+/// server calls supported rather than treating them as gaps.
+@MainActor
+final class CopyTests: XCTestCase {
+    private func decode(_ json: String) throws -> Copy {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return try d.decode(Copy.self, from: Data(json.utf8))
+    }
+
+    func testDecodesACopyWithNoEditionOrLocation() throws {
+        // A book on a shelf with nobody having said which printing it is. The
+        // server calls that supported, so the client cannot treat it as broken.
+        let copy = try decode("""
+        {"id":"c1","library_id":"lib1","book_id":"b1","edition_id":null,
+         "condition":"good","is_signed":false,"notes":"",
+         "location_id":null,"on_loan_to":""}
+        """)
+        XCTAssertNil(copy.editionId)
+        XCTAssertEqual(copy.locationName, "")
+        XCTAssertFalse(copy.isLent)
+    }
+
+    func testLentIsDrivenByABorrowerNotAFlag() throws {
+        let copy = try decode("""
+        {"id":"c2","library_id":"lib1","book_id":"b1","condition":"fine",
+         "is_signed":true,"notes":"","on_loan_to":"James","location_name":"Office"}
+        """)
+        XCTAssertTrue(copy.isLent)
+        XCTAssertEqual(copy.onLoanTo, "James")
+        XCTAssertEqual(copy.locationName, "Office")
+        XCTAssertTrue(copy.isSigned)
+    }
+
+    /// Codes come from a server vocabulary and labels live here, because a name
+    /// stored in the database cannot be translated. A code with no label shows
+    /// itself rather than an empty cell.
+    func testConditionLabelsFallBackToTheCode() {
+        XCTAssertEqual(CopyCondition.label("very_good"), "Very good")
+        XCTAssertEqual(CopyCondition.label("ex_library"), "Ex-library")
+        XCTAssertEqual(CopyCondition.label("brand_new_code"), "brand_new_code")
+    }
+}
