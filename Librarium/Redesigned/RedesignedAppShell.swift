@@ -49,9 +49,13 @@ struct RedesignedAppShell: View {
                     .opacity(selectedTab == .home ? 1 : 0)
                     .allowsHitTesting(selectedTab == .home)
 
-                RedesignedSearchView()
-                    .opacity(selectedTab == .search ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .search)
+                // The books surface, not a search box. Search is one filter
+                // among eleven here, the same way `q` is one parameter among
+                // several on `/me/books`; the cross-entity search this tab used
+                // to be is behind the magnifying glass in its header.
+                RedesignedBrowseView()
+                    .opacity(selectedTab == .books ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .books)
 
                 libraryTab
                     .opacity(selectedTab == .library ? 1 : 0)
@@ -126,7 +130,7 @@ struct RedesignedAppShell: View {
 // MARK: - Tab identity
 
 enum AppTab: Hashable {
-    case home, search, library, series
+    case home, books, library, series
 }
 
 /// Detail views advertise the tab they "logically belong to" via this
@@ -157,17 +161,17 @@ private struct EditorialTabBar: View {
     @Binding var selected: AppTab
     /// Which tab to visually highlight. Usually equals `selected`, but
     /// detail views can override via `LogicalTabPreferenceKey` — that's
-    /// how a book detail pushed onto Search's stack gets Library lit
-    /// while the actual selectedTab stays `.search`.
+    /// how a book detail pushed onto the Books stack gets Library lit
+    /// while the actual selectedTab stays `.books`.
     let highlight: AppTab
     let onScan: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
             tab(.home,    icon: "house.fill",          label: "Home")
-            tab(.search,  icon: "magnifyingglass",     label: "Search")
+            tab(.books,   icon: "books.vertical",       label: "Books")
             scanFAB
-            tab(.library, icon: "books.vertical.fill", label: "Library")
+            tab(.library, icon: "building.columns.fill", label: "Libraries")
             tab(.series,  icon: "list.number",         label: "Series")
         }
         .padding(.horizontal, 12)
