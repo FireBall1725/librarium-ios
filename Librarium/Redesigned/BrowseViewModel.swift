@@ -149,7 +149,7 @@ final class BrowseViewModel {
         // URLSession cannot open, so including one costs a timeout per page
         // and returns nothing.
         appState.accounts
-            .filter { $0.kind != .local && !$0.url.hasPrefix("local://") }
+            .filter(\.isServerBacked)
             .map { Target(url: $0.url, client: appState.makeClient(serverURL: $0.url)) }
     }
 

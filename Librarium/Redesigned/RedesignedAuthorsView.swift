@@ -297,7 +297,7 @@ final class AuthorsViewModel {
         isLoading = true
         defer { isLoading = false }
 
-        let accounts = appState.accounts.filter { $0.kind != .local && !$0.url.hasPrefix("local://") }
+        let accounts = appState.accounts.filter(\.isServerBacked)
         let picked = selectedRoles
 
         var collected: [AuthorIndexEntry] = []

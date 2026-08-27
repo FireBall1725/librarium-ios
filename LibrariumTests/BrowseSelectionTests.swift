@@ -124,6 +124,20 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertEqual(merged.library.count, 2)
     }
 
+    // MARK: - Which server answers a /me route
+
+    func testALocalURLIsRecognisedAsALiteAccount() {
+        // `local://` is not a scheme URLSession can open. A request built on
+        // one fails with "unsupported URL", and a caller that swallows errors
+        // reads that as a server with nothing on it: that is exactly what hid
+        // every saved view on an install whose primary account was a Lite one,
+        // and with them the default view and its grouping.
+        XCTAssertTrue(ServerAccount.isLocalURL("local://6A5F41C8-5E1A-452D-9B1D-EEA6AA6CBB0E"))
+        XCTAssertFalse(ServerAccount.isLocalURL("https://librarium.example"))
+        // Not a prefix match on the word: a real host can start with "local".
+        XCTAssertFalse(ServerAccount.isLocalURL("https://localhost:8080"))
+    }
+
     // MARK: - Cancellation
 
     func testACancelledRequestIsNotAFailure() {

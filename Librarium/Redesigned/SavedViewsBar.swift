@@ -13,38 +13,44 @@ struct SavedViewsBar: View {
     let views: [SavedList]
     /// The view whose filter matches what is on screen, if any.
     let activeID: String?
+    /// Whether there is anything worth saving. Save stays visible either way;
+    /// this only decides whether it can be tapped.
     let canSave: Bool
     let onOpen: (SavedList) -> Void
     let onSave: () -> Void
 
     var body: some View {
-        if !views.isEmpty || canSave {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(views) { view in
-                        chip(view)
-                    }
-                    if canSave {
-                        Button(action: onSave) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 10, weight: .bold))
-                                Text("Save view")
-                                    .font(Theme.Fonts.ui(13, weight: .medium))
-                            }
-                            .foregroundStyle(Theme.Colors.appText2)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 6)
-                            .background(
-                                Capsule().stroke(style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                                    .foregroundStyle(Theme.Colors.appLineStrong)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
+        // Always drawn, rows or not. The web client learned this the hard way:
+        // hiding the section when there were no views took the way to make one
+        // away with the last one, so deleting everything left no way back. Here
+        // it was worse, because a reader with no views saw no row at all and
+        // had nothing to tell them views existed.
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(views) { view in
+                    chip(view)
                 }
-                .padding(.horizontal, 22)
+                if true {
+                    Button(action: onSave) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .bold))
+                            Text(views.isEmpty ? "Save this as a view" : "Save view")
+                                .font(Theme.Fonts.ui(13, weight: .medium))
+                        }
+                        .foregroundStyle(canSave ? Theme.Colors.appText2 : Theme.Colors.appText3)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule().stroke(style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                                .foregroundStyle(Theme.Colors.appLineStrong)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSave)
+                }
             }
+            .padding(.horizontal, 22)
         }
     }
 

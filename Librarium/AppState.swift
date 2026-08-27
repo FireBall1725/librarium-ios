@@ -251,9 +251,32 @@ final class AppState {
         return client
     }
 
+    /// A client for a real server, for the `/me` routes only a server can
+    /// answer: saved views, lists, suggestions, loans.
+    ///
+    /// The primary account when it is a server, otherwise the first that is.
+    /// `makePrimaryClient` is not a substitute: a Lite account can be primary,
+    /// and its `local://` URL is not something URLSession can open. Asking it
+    /// for a route fails with "unsupported URL", which a caller that swallows
+    /// errors cannot tell apart from a server with nothing saved on it.
+    ///
+    /// nil when every account is Lite, which is a real state rather than a
+    /// failure: there is no server to have views on.
+    func makeServerClient() -> APIClient? {
+        let servers = accounts.filter(\.isServerBacked)
+        guard let account = servers.first(where: { $0.id == primaryAccountID }) ?? servers.first
+        else { return nil }
+        return makeClient(serverURL: account.url)
+    }
+
     /// Client bound to the user-selected primary server — used for global
     /// lookups (e.g. ISBN metadata) that should not drift based on which
     /// library the user happens to be viewing.
+    ///
+    /// Primary does not mean "a server". A Lite account can be primary, and
+    /// this hands back a client pointed at its `local://` URL, which every
+    /// network call then fails on. For anything that has to reach a server, use
+    /// `makeServerClient()` above.
     func makePrimaryClient() -> APIClient {
         guard let account = primaryAccount else {
             return APIClient(baseURL: "")

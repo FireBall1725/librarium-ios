@@ -191,6 +191,7 @@ struct RedesignedBrowseView: View {
             // every visit; the surfaces you cross to occasionally go behind
             // the overflow, which is where the web page puts them too.
             if isRoot { moreMenu }
+            groupButton
             sortMenu
             filterButton
         }
@@ -250,6 +251,27 @@ struct RedesignedBrowseView: View {
         .padding(.bottom, 4)
     }
 
+    /// On or off at a glance. Grouping changes what a row means, which is a
+    /// bigger change than a sort and does not belong buried in a menu.
+    @ViewBuilder
+    private var groupButton: some View {
+        let on = vm.selection.grouped
+        Button {
+            vm.selection.grouped.toggle()
+            reload()
+        } label: {
+            Image(systemName: on ? "square.stack.fill" : "square.stack")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(on ? Theme.Colors.accentStrong : Theme.Colors.appText2)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(on ? Theme.Colors.accentSoft : Color.white.opacity(0.06)))
+                .overlay(Circle().stroke(on ? Color.clear : Theme.Colors.appLine, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(on ? "Grouped by series" : "Group by series")
+        .padding(.bottom, 4)
+    }
+
     @ViewBuilder
     private var moreMenu: some View {
         Menu {
@@ -303,17 +325,6 @@ struct RedesignedBrowseView: View {
     @ViewBuilder
     private var sortMenu: some View {
         Menu {
-            Button {
-                vm.selection.grouped.toggle()
-                reload()
-            } label: {
-                if vm.selection.grouped {
-                    Label("Group by series", systemImage: "checkmark")
-                } else {
-                    Text("Group by series")
-                }
-            }
-            Divider()
             ForEach(BookSortOption.allCases) { option in
                 Button {
                     vm.sort = option
@@ -536,7 +547,7 @@ struct RedesignedBrowseView: View {
     /// app rather than inventing a picker for it.
     @discardableResult
     private func loadViews() async -> [SavedList] {
-        let client = appState.makePrimaryClient()
+        guard let client = appState.makeServerClient() else { return [] }
         let loaded = (try? await ListService(client: client).savedViews(surface: "books")) ?? []
         views = loaded
         return loaded
@@ -547,7 +558,7 @@ struct RedesignedBrowseView: View {
         guard !name.isEmpty else { return }
         let query = vm.selection.queryString()
         Task {
-            let client = appState.makePrimaryClient()
+            guard let client = appState.makeServerClient() else { return }
             try? await ListService(client: client)
                 .saveView(name: name, surface: "books", query: query)
             await loadViews()
@@ -558,7 +569,7 @@ struct RedesignedBrowseView: View {
     /// round trip and the library facet can be named before its counts arrive.
     private func loadLibraries() async {
         var found: [String: Library] = [:]
-        for account in appState.accounts where account.kind != .local {
+        for account in appState.accounts where account.isServerBacked {
             let client = appState.makeClient(serverURL: account.url)
             guard let list = try? await LibraryService(client: client).list() else { continue }
             for var library in list {

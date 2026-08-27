@@ -57,8 +57,8 @@ struct RedesignedSeriesListView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .task(id: appState.accounts.map(\.id)) {
-                await loadViews()
-                if let fallback = views.first(where: { $0.isDefault }), vm.entries.isEmpty {
+                let loaded = await loadViews()
+                if let fallback = loaded.first(where: { $0.isDefault }), vm.entries.isEmpty {
                     vm.selection = SeriesSelection(query: fallback.filterQuery)
                 }
                 await vm.load(appState: appState, modelContainer: modelContext.container)
@@ -181,9 +181,12 @@ struct RedesignedSeriesListView: View {
         reload()
     }
 
-    private func loadViews() async {
-        let client = appState.makePrimaryClient()
-        views = (try? await ListService(client: client).savedViews(surface: "series")) ?? []
+    @discardableResult
+    private func loadViews() async -> [SavedList] {
+        guard let client = appState.makeServerClient() else { return [] }
+        let loaded = (try? await ListService(client: client).savedViews(surface: "series")) ?? []
+        views = loaded
+        return loaded
     }
 
     private func saveView() {
@@ -191,7 +194,7 @@ struct RedesignedSeriesListView: View {
         guard !name.isEmpty else { return }
         let query = vm.selection.queryString()
         Task {
-            let client = appState.makePrimaryClient()
+            guard let client = appState.makeServerClient() else { return }
             try? await ListService(client: client)
                 .saveView(name: name, surface: "series", query: query)
             await loadViews()
