@@ -17,12 +17,29 @@ struct SavedViewsPanel: View {
     let onSave: () -> Void
     let onDelete: (SavedList) -> Void
     let onClose: () -> Void
+    /// Why there is nothing here, when the reason is not "you have no views".
+    var error: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
 
-            if views.isEmpty {
+            if let error, views.isEmpty {
+                // Not the same as having none. Telling somebody to save their
+                // first view while their existing ones sit unreachable on a
+                // server is the wrong instruction.
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Couldn't load your views", systemImage: "exclamationmark.triangle")
+                        .font(Theme.Fonts.ui(13, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.warn)
+                    Text(error)
+                        .font(Theme.Fonts.ui(12))
+                        .foregroundStyle(Theme.Colors.appText3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 4)
+            } else if views.isEmpty {
                 Text("A view is a filter with a name. Set some filters, then save them here.")
                     .font(Theme.Fonts.ui(13))
                     .foregroundStyle(Theme.Colors.appText3)

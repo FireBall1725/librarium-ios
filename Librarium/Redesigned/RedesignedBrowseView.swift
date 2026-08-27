@@ -48,6 +48,11 @@ struct RedesignedBrowseView: View {
     @State private var views: [SavedList] = []
     @State private var showSaveView = false
     @State private var newViewName = ""
+    /// Why the views panel is empty, when it is not simply empty. A failed
+    /// request and a reader with no views looked identical, and that is exactly
+    /// how the panel came to show nothing on an install whose saved views were
+    /// all sitting on the server.
+    @State private var viewsError: String?
 
     /// The tab root owns a navigation stack; a pushed copy must not. Two nested
     /// stacks look like one until something is pushed onto the inner one, and
@@ -82,7 +87,8 @@ struct RedesignedBrowseView: View {
                             showSaveView = true
                         },
                         onDelete: { deleteView($0) },
-                        onClose: { showViews = false }
+                        onClose: { showViews = false },
+                        error: viewsError
                     )
                 }
             }
@@ -638,10 +644,20 @@ struct RedesignedBrowseView: View {
 
     @discardableResult
     private func loadViews() async -> [SavedList] {
-        guard let client = appState.makeServerClient() else { return [] }
-        let loaded = (try? await ListService(client: client).savedViews(surface: "books")) ?? []
-        views = loaded
-        return loaded
+        guard let client = appState.makeServerClient() else {
+            viewsError = nil
+            return []
+        }
+        do {
+            let loaded = try await ListService(client: client).savedViews(surface: "books")
+            views = loaded
+            viewsError = nil
+            return loaded
+        } catch {
+            viewsError = BrowseViewModel.isCancellation(error)
+                ? nil : error.localizedDescription
+            return views
+        }
     }
 
     private func saveView() {

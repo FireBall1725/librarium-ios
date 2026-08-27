@@ -24,6 +24,7 @@ struct RedesignedSeriesListView: View {
     @State private var views: [SavedList] = []
     @State private var showSaveView = false
     @State private var newViewName = ""
+    @State private var viewsError: String?
 
     var body: some View {
         ZStack {
@@ -40,7 +41,8 @@ struct RedesignedSeriesListView: View {
                         showSaveView = true
                     },
                     onDelete: { deleteView($0) },
-                    onClose: { showViews = false }
+                    onClose: { showViews = false },
+                    error: viewsError
                 )
             }
             SideDrawer(edge: .trailing, isOpen: $showFilters) {
@@ -198,10 +200,20 @@ struct RedesignedSeriesListView: View {
 
     @discardableResult
     private func loadViews() async -> [SavedList] {
-        guard let client = appState.makeServerClient() else { return [] }
-        let loaded = (try? await ListService(client: client).savedViews(surface: "series")) ?? []
-        views = loaded
-        return loaded
+        guard let client = appState.makeServerClient() else {
+            viewsError = nil
+            return []
+        }
+        do {
+            let loaded = try await ListService(client: client).savedViews(surface: "series")
+            views = loaded
+            viewsError = nil
+            return loaded
+        } catch {
+            viewsError = BrowseViewModel.isCancellation(error)
+                ? nil : error.localizedDescription
+            return views
+        }
     }
 
     private func saveView() {
