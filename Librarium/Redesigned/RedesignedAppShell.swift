@@ -82,6 +82,13 @@ struct RedesignedAppShell: View {
                     .opacity(selectedTab == .series ? 1 : 0)
                     .allowsHitTesting(selectedTab == .series)
             }
+            // Rebuilt from scratch when the collection changes. Every tab holds
+            // its own loaded books, counts, filters and navigation stack, and
+            // all of them belong to the collection they came from: a library
+            // filter is another server's UUID, a saved view is another server's
+            // row. Asking each surface to notice and reset itself is five
+            // places to get it wrong; this is one place to get it right.
+            .id(appState.activeSource?.id)
             // Reserve space for the floating bar so scroll content can
             // clear the pill. 64pt bar + 26pt gap = 90pt. We need both
             // modifiers: `safeAreaPadding` for plain layout descendants
