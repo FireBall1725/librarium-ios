@@ -197,10 +197,16 @@ struct RedesignedSeriesDetailView: View {
     }
 
     private var volumesPillText: String {
-        let count = series.totalCount ?? series.bookCount
-        let unit = count == 1 ? "vol" : "vols"
-        let status = series.isComplete ? "complete" : (series.status.isEmpty ? "ongoing" : series.status)
-        return "\(count) \(unit) · \(status)"
+        // Held over total, not just total. A complete run and one with two
+        // volumes on the shelf both said "74 vols" before, which is the
+        // publisher's number rather than the reader's.
+        let status = SeriesFacetLabels
+            .status(series.status.isEmpty ? "ongoing" : series.status).lowercased()
+        if let total = series.totalCount, total > 0 {
+            return "\(series.bookCount) of \(total) vols · \(status)"
+        }
+        let count = series.bookCount
+        return "\(count) \(count == 1 ? "vol" : "vols") · \(status)"
     }
 
     @ViewBuilder
@@ -371,8 +377,13 @@ struct RedesignedSeriesDetailView: View {
                     .tracking(1.2)
                     .foregroundStyle(Theme.Colors.appText3)
                 Spacer()
-                if !vm.books.isEmpty {
-                    Text("\(vm.books.count)")
+                if !vm.volumes.isEmpty {
+                    // Held over the whole run, not just how many rows there
+                    // are. "56" beside a list of 74 rows says nothing about
+                    // which of the two numbers the reader owns.
+                    Text(vm.missingCount > 0
+                         ? "\(vm.heldCount) of \(vm.volumes.count)"
+                         : "\(vm.volumes.count)")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.Colors.appText3)
                         .monospacedDigit()
@@ -381,11 +392,11 @@ struct RedesignedSeriesDetailView: View {
             .padding(.horizontal, 22)
             .padding(.bottom, 8)
 
-            if vm.isLoading && vm.books.isEmpty {
+            if vm.isLoading && vm.volumes.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 120)
                     .tint(Theme.Colors.appText2)
-            } else if vm.books.isEmpty {
+            } else if vm.volumes.isEmpty {
                 Text("No volumes in this series yet.")
                     .font(Theme.Fonts.ui(13, weight: .medium))
                     .foregroundStyle(Theme.Colors.appText3)
@@ -394,13 +405,13 @@ struct RedesignedSeriesDetailView: View {
             } else {
                 ForEach(vm.arcGroups) { group in
                     if let arc = group.arc {
-                        arcHeader(arc: arc, books: group.books)
+                        arcHeader(arc: arc, volumes: group.volumes)
                     } else if !vm.arcs.isEmpty {
                         // Catch-all bucket label for unassigned volumes
                         // when the series otherwise has named arcs.
-                        otherArcHeader(count: group.books.count)
+                        otherArcHeader(count: group.volumes.count)
                     }
-                    volumesGroup(books: group.books)
+                    volumesGroup(volumes: group.volumes)
                 }
             }
         }
@@ -408,7 +419,7 @@ struct RedesignedSeriesDetailView: View {
     }
 
     @ViewBuilder
-    private func arcHeader(arc: SeriesArc, books: [Book]) -> some View {
+    private func arcHeader(arc: SeriesArc, volumes: [RunVolume]) -> some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(arc.name)
@@ -421,7 +432,7 @@ struct RedesignedSeriesDetailView: View {
                 }
             }
             Spacer()
-            Text(arcStatusLabel(books: books))
+            Text(arcStatusLabel(volumes: volumes))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Theme.Colors.appText3)
         }
@@ -447,17 +458,32 @@ struct RedesignedSeriesDetailView: View {
     }
 
     @ViewBuilder
-    private func volumesGroup(books: [Book]) -> some View {
+    private func volumesGroup(volumes: [RunVolume]) -> some View {
         VStack(spacing: 0) {
-            ForEach(Array(books.enumerated()), id: \.element.id) { idx, book in
-                let position = vm.positions[book.id] ?? 0
-                Button { selectedBook = book } label: {
-                    volumeRow(book: book, position: position)
+            ForEach(Array(volumes.enumerated()), id: \.element.id) { idx, volume in
+                Button { open(volume) } label: {
+                    volumeRow(volume: volume)
                 }
                 .buttonStyle(.plain)
-                if idx != books.count - 1 {
+                if idx != volumes.count - 1 {
                     Divider().background(Theme.Colors.appLine).padding(.leading, 22 + 36 + 12)
                 }
+            }
+        }
+    }
+
+    /// A missing volume is a real book row with a real page, so it opens like
+    /// any other. Its book has to be fetched without naming a library, because
+    /// it belongs to none.
+    private func open(_ volume: RunVolume) {
+        if let book = volume.book {
+            selectedBook = book
+            return
+        }
+        Task {
+            let client = appState.makeClient(serverURL: library.serverURL)
+            if let book = try? await BookService(client: client).get(bookId: volume.entry.bookId) {
+                selectedBook = book
             }
         }
     }
@@ -475,65 +501,80 @@ struct RedesignedSeriesDetailView: View {
             : String(format: "%.1f", value)
     }
 
-    private func arcStatusLabel(books: [Book]) -> String {
-        let read = books.filter { $0.userReadStatus == "read" }.count
-        let reading = books.filter { $0.userReadStatus == "reading" }.count
+    private func arcStatusLabel(volumes: [RunVolume]) -> String {
+        let read = volumes.filter { $0.readStatus == "read" }.count
+        let reading = volumes.filter { $0.readStatus == "reading" }.count
+        let missing = volumes.filter { !$0.held }.count
         var parts: [String] = []
         if read > 0 { parts.append("\(read) read") }
         if reading > 0 { parts.append("\(reading) reading") }
-        if parts.isEmpty { parts.append(books.count == 1 ? "1 vol" : "\(books.count) vols") }
+        if missing > 0 { parts.append("\(missing) missing") }
+        if parts.isEmpty { parts.append(volumes.count == 1 ? "1 vol" : "\(volumes.count) vols") }
         return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
-    private func volumeRow(book: Book, position: Double) -> some View {
-        let primaryAuthor = book.contributors
+    private func volumeRow(volume: RunVolume) -> some View {
+        let book = volume.book
+        let primaryAuthor = book?.contributors
             .first(where: { $0.role.caseInsensitiveCompare("author") == .orderedSame })?.name
-            ?? book.contributors.first?.name
-        HStack(spacing: 12) {
+            ?? book?.contributors.first?.name
+            ?? volume.entry.contributors.first?.name
+        return HStack(spacing: 12) {
             BookCoverImage(
-                url: coverURL(for: book),
+                url: coverURL(for: volume),
                 width: 36,
                 height: 54,
-                title: book.title,
+                title: volume.title,
                 author: primaryAuthor,
-                readStatus: book.userReadStatus
+                readStatus: volume.readStatus
             )
             .clipShape(RoundedRectangle(cornerRadius: 4))
+            // Desaturated rather than hidden. The volume exists and its cover
+            // is real; what is missing is a copy on a shelf, and drawing it at
+            // full strength would say the opposite.
+            .opacity(volume.held ? 1 : 0.35)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(volumeRowTitle(book: book, position: position))
+                Text(volumeRowTitle(volume: volume))
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.appText)
+                    .foregroundStyle(volume.held ? Theme.Colors.appText : Theme.Colors.appText2)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                Text(volumeRowSubtitle(book: book))
+                Text(volumeRowSubtitle(volume: volume))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.Colors.appText3)
+                    .foregroundStyle(volume.held ? Theme.Colors.appText3 : Theme.Colors.warn)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            statusIndicator(for: book)
+            if let book, volume.held {
+                statusIndicator(for: book)
+            }
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
     }
 
-    private func volumeRowTitle(book: Book, position: Double) -> String {
-        let isWhole = position.truncatingRemainder(dividingBy: 1) == 0
-        let posLabel = isWhole ? "Vol. \(Int(position))" : "Vol. \(String(format: "%.1f", position))"
-        return "\(posLabel) — \(book.title)"
+    private func volumeRowTitle(volume: RunVolume) -> String {
+        let posLabel = "Vol. " + volume.entry.positionLabel
+        let title = volume.title
+        return title.isEmpty ? posLabel : "\(posLabel) — \(title)"
     }
 
-    private func volumeRowSubtitle(book: Book) -> String {
-        switch book.userReadStatus {
+    private func volumeRowSubtitle(volume: RunVolume) -> String {
+        // Said plainly rather than left to the greyed cover. "Not on the shelf"
+        // is an answer; a dimmer thumbnail is a hint somebody has to learn.
+        guard volume.held else { return "Not on the shelf" }
+        switch volume.readStatus {
         case "read":            return "Read"
         case "reading":         return "Reading"
         case "did_not_finish":  return "Did not finish"
         case "want_to_read":    return "Want to read"
-        default:                return book.contributors.first?.name ?? ""
+        default:
+            return volume.book?.contributors.first?.name
+                ?? volume.entry.contributors.first?.name ?? ""
         }
     }
 
@@ -568,9 +609,28 @@ struct RedesignedSeriesDetailView: View {
 
     // MARK: - Helpers
 
+    private func coverURL(for volume: RunVolume) -> URL? {
+        library.coverURL(for: volume.book?.coverUrl ?? volume.entry.coverUrl)
+    }
+
     private func coverURL(for book: Book) -> URL? {
         library.coverURL(for: book.coverUrl)
     }
+}
+
+/// One volume of the run.
+///
+/// The book is nil when nobody holds it, which is not a loading state and not
+/// an error: a run lists every volume that exists, and the ones missing from
+/// the shelf are the reason anybody opens this page. The entry alone carries
+/// what such a row draws.
+struct RunVolume: Identifiable {
+    let entry: SeriesEntry
+    let book: Book?
+    var id: String { entry.bookId }
+    var held: Bool { entry.held }
+    var title: String { book?.title ?? entry.title }
+    var readStatus: String { book?.userReadStatus ?? entry.userReadStatus }
 }
 
 // MARK: - View model
@@ -581,6 +641,9 @@ final class RedesignedSeriesDetailViewModel {
     /// `Book` payload (fetched per entry) so we have user_read_status,
     /// rating, etc. for the row indicators.
     var books: [Book] = []
+    /// Every volume of the run, held or not, in position order. The books above
+    /// cover only the held ones; a run lists its whole length.
+    var entries: [SeriesEntry] = []
     /// Position keyed by bookId — we lose the position when we replace
     /// `SeriesEntry` with `Book` so cache it on load.
     var positions: [String: Double] = [:]
@@ -622,6 +685,7 @@ final class RedesignedSeriesDetailViewModel {
             loadFromCache(library: library, series: series, modelContainer: modelContainer)
             return
         }
+        self.entries = entries.sorted { $0.position < $1.position }
         positions = Dictionary(uniqueKeysWithValues: entries.map { ($0.bookId, $0.position) })
         arcAssignments = Dictionary(uniqueKeysWithValues: entries.compactMap { entry in
             entry.arcId.map { (entry.bookId, $0) }
@@ -648,7 +712,11 @@ final class RedesignedSeriesDetailViewModel {
         //    user_read_status and progress for the row indicator.
         var fetched: [Book] = []
         await withTaskGroup(of: Book?.self) { group in
-            for entry in entries {
+            // Held volumes only. A volume nobody has belongs to no library, so
+            // the per-library route 404s for precisely the rows that exist to
+            // show what is missing, and the entry already carries everything
+            // those rows draw.
+            for entry in entries where entry.held {
                 group.addTask {
                     try? await BookService(client: client)
                         .get(libraryId: library.id, bookId: entry.bookId)
@@ -685,6 +753,11 @@ final class RedesignedSeriesDetailViewModel {
             entry.arcId.map { (entry.bookId, $0) }
         })
         arcs = arcCache.arcs(for: library, seriesId: series.id)
+        // The offline cache stores positions and arc ids, not whole entries, so
+        // it cannot say what is missing. The volume list falls back to the
+        // cached books, which is the same run minus its gaps: the honest answer
+        // for a page with no server to ask.
+        entries = []
         let cachedBooks: [Book] = cached.compactMap { entry in
             bookCache.book(
                 serverURL: library.serverURL,
@@ -703,41 +776,62 @@ final class RedesignedSeriesDetailViewModel {
     /// Volumes grouped by arc for rendering. Order: arc 1, arc 2, ...
     /// then "Other volumes" for entries without an arc assignment. When
     /// the series has no arcs at all, returns a single anonymous group.
+    /// Every volume in position order, held ones carrying their full book.
+    var volumes: [RunVolume] {
+        guard !entries.isEmpty else {
+            // An older server sends no entries at all. Fall back to the books
+            // so the page keeps working rather than emptying itself.
+            return books
+                .sorted { (positions[$0.id] ?? 0) < (positions[$1.id] ?? 0) }
+                .map { book in
+                    RunVolume(entry: SeriesEntry.placeholder(
+                        bookId: book.id, title: book.title,
+                        position: positions[book.id] ?? 0), book: book)
+                }
+        }
+        let byID = Dictionary(uniqueKeysWithValues: books.map { ($0.id, $0) })
+        return entries
+            .sorted { $0.position < $1.position }
+            .map { RunVolume(entry: $0, book: byID[$0.bookId]) }
+    }
+
+    var heldCount: Int { volumes.filter(\.held).count }
+    var missingCount: Int { volumes.filter { !$0.held }.count }
+
     struct ArcGroup: Identifiable {
         let id: String              // arc id, or "__none__"
         let arc: SeriesArc?         // nil for the "no arc" bucket
-        let books: [Book]
+        let volumes: [RunVolume]
     }
 
     var arcGroups: [ArcGroup] {
+        let all = volumes
         guard !arcs.isEmpty else {
             // No arcs: single flat group, id is sentinel so the view still has
             // something to ForEach over without rendering an arc header.
-            return [ArcGroup(id: "__none__", arc: nil, books: books)]
+            return [ArcGroup(id: "__none__", arc: nil, volumes: all)]
         }
-        var byArc: [String: [Book]] = [:]
-        var unassigned: [Book] = []
-        for book in books {
-            if let arcId = arcAssignments[book.id] {
-                byArc[arcId, default: []].append(book)
+        var byArc: [String: [RunVolume]] = [:]
+        var unassigned: [RunVolume] = []
+        for volume in all {
+            if let arcId = volume.entry.arcId ?? arcAssignments[volume.id] {
+                byArc[arcId, default: []].append(volume)
             } else {
-                unassigned.append(book)
+                unassigned.append(volume)
             }
         }
         var groups: [ArcGroup] = arcs.compactMap { arc in
-            let arcBooks = (byArc[arc.id] ?? []).sorted {
-                (positions[$0.id] ?? 0) < (positions[$1.id] ?? 0)
-            }
-            // Skip arcs with no books in the user's library — surfacing a
-            // header for an empty arc would just be visual noise.
-            guard !arcBooks.isEmpty else { return nil }
-            return ArcGroup(id: arc.id, arc: arc, books: arcBooks)
+            let arcVolumes = (byArc[arc.id] ?? []).sorted { $0.entry.position < $1.entry.position }
+            // Skip arcs with nothing in them — surfacing a header for an empty
+            // arc would just be visual noise.
+            guard !arcVolumes.isEmpty else { return nil }
+            return ArcGroup(id: arc.id, arc: arc, volumes: arcVolumes)
         }
         if !unassigned.isEmpty {
             groups.append(ArcGroup(
                 id: "__none__",
                 arc: nil,
-                books: unassigned.sorted { (positions[$0.id] ?? 0) < (positions[$1.id] ?? 0) }
+                volumes: unassigned.sorted { $0.entry.position < $1.entry.position }
             ))
         }
         return groups

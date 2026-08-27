@@ -206,6 +206,18 @@ struct BookFacets: Decodable {
     }
 
     private static func sum(_ a: [FacetValue], _ b: [FacetValue]) -> [FacetValue] {
+        FacetMerge.sum(a, b)
+    }
+}
+
+/// Adding two accounts' counts together.
+///
+/// Shared by both surfaces because the rule is the same, and having it twice is
+/// how the two would drift. Values match on their raw value, which is a name
+/// for tags and genres and a UUID for libraries and lists, so two servers'
+/// libraries stay separate rows while a genre they share becomes one.
+enum FacetMerge {
+    static func sum(_ a: [FacetValue], _ b: [FacetValue]) -> [FacetValue] {
         guard !b.isEmpty else { return a }
         guard !a.isEmpty else { return b }
         var order: [String] = []

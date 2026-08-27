@@ -48,6 +48,25 @@ struct MeBrowseService {
         let data: BookFacets
     }
 
+    // MARK: - Series
+
+    /// Every run the account can read, with its counts and the facets beside
+    /// them. One request per account rather than one per library.
+    func series(selection: SeriesSelection, sort: SeriesSortOption) async throws -> SeriesIndexPage {
+        var items = selection.queryItems()
+        if sort != .name {
+            items.append(URLQueryItem(name: "sort", value: sort.field))
+            // Descending for every sort but name. Nobody opens this asking for
+            // the run with the fewest volumes missing.
+            items.append(URLQueryItem(name: "dir", value: "desc"))
+        }
+        // The index builds a strip of up to sixty covers per run for the page
+        // that draws them. The mosaic here draws four, and asking for the rest
+        // is work nobody sees.
+        items.append(URLQueryItem(name: "volumes", value: "4"))
+        return try await client.get(Self.path("/api/v1/me/series/index", items))
+    }
+
     // MARK: - Counts
 
     func counts() async throws -> CollectionCounts {
