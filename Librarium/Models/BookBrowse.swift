@@ -247,6 +247,12 @@ struct BrowseSelection: Equatable {
     var values: [BrowseFacet: Set<String>] = [.ownership: defaultOwnership]
     var query = ""
 
+    /// Contributor ids. Not a facet: the server takes the parameter but sends
+    /// no counts for it, because a collection has hundreds of people and a
+    /// list of them is a page rather than a section in a sheet. It arrives from
+    /// the authors surface and leaves the same way.
+    var contributors: Set<String> = []
+
     subscript(facet: BrowseFacet) -> Set<String> {
         get { values[facet] ?? [] }
         set { values[facet] = newValue.isEmpty ? nil : newValue }
@@ -271,7 +277,7 @@ struct BrowseSelection: Equatable {
     /// only counts when it is something other than the default, or a reader
     /// who has touched nothing is told they have a filter applied.
     var activeCount: Int {
-        var n = 0
+        var n = contributors.isEmpty ? 0 : 1
         for facet in BrowseFacet.allCases {
             let vals = self[facet]
             if vals.isEmpty { continue }
@@ -283,6 +289,7 @@ struct BrowseSelection: Equatable {
 
     mutating func clear() {
         values = [.ownership: Self.defaultOwnership]
+        contributors = []
     }
 
     func queryItems() -> [URLQueryItem] {
@@ -296,6 +303,10 @@ struct BrowseSelection: Equatable {
             // iteration order is not stable, and an unstable URL defeats every
             // cache between here and the database.
             items.append(URLQueryItem(name: facet.apiParam, value: vals.sorted().joined(separator: ",")))
+        }
+        if !contributors.isEmpty {
+            items.append(URLQueryItem(name: "contributor",
+                                      value: contributors.sorted().joined(separator: ",")))
         }
         return items
     }

@@ -67,6 +67,22 @@ struct MeBrowseService {
         return try await client.get(Self.path("/api/v1/me/series/index", items))
     }
 
+    // MARK: - Authors
+
+    /// Everyone credited on a book the account can read, with the spines to
+    /// show for it. Filtered by role rather than searched: naming a role is a
+    /// different question from matching a name.
+    func authors(libraries: Set<String>, roles: Set<String>) async throws -> AuthorIndexPage {
+        var items: [URLQueryItem] = []
+        if !libraries.isEmpty {
+            items.append(URLQueryItem(name: "lib", value: libraries.sorted().joined(separator: ",")))
+        }
+        if !roles.isEmpty {
+            items.append(URLQueryItem(name: "role", value: roles.sorted().joined(separator: ",")))
+        }
+        return try await client.get(Self.path("/api/v1/me/authors/index", items))
+    }
+
     // MARK: - Counts
 
     func counts() async throws -> CollectionCounts {

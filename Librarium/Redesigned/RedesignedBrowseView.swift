@@ -14,6 +14,13 @@ import SwiftUI
 /// same move the API made when `/libraries/{id}/books` became `/me/books`, and
 /// it is what makes "what am I missing" a question the phone can ask.
 struct RedesignedBrowseView: View {
+    /// A filter to open on, for the surfaces that push into this one. An
+    /// author's page is this grid with one contributor ticked, so it is the
+    /// same view rather than a second grid with the same bugs.
+    var initialSelection: BrowseSelection?
+    /// What to call the scope when it did not come from the library facet.
+    var initialTitle: String?
+
     @Environment(AppState.self) private var appState
 
     @State private var vm = BrowseViewModel()
@@ -24,8 +31,22 @@ struct RedesignedBrowseView: View {
     @State private var selected: BookOpenRequest?
     @State private var reauthAccount: ServerAccount?
 
+    /// The tab root owns a navigation stack; a pushed copy must not. Two nested
+    /// stacks look like one until something is pushed onto the inner one, and
+    /// then the back button goes to the wrong place.
+    private var isRoot: Bool { initialSelection == nil }
+
     var body: some View {
-        NavigationStack {
+        if isRoot {
+            NavigationStack { content }
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        Group {
             ZStack {
                 Theme.Colors.appBackground.ignoresSafeArea()
 
@@ -48,9 +69,10 @@ struct RedesignedBrowseView: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .toolbar(.hidden, for: .navigationBar)
+            .toolbar(isRoot ? .hidden : .visible, for: .navigationBar)
             .task {
                 guard vm.books.isEmpty else { return }
+                if let initialSelection { vm.selection = initialSelection }
                 await loadLibraries()
                 await vm.load(appState: appState)
             }
@@ -92,6 +114,8 @@ struct RedesignedBrowseView: View {
                 Button("OK") { vm.error = nil }
             } message: { Text(vm.error ?? "") }
         }
+        .navigationTitle(isRoot ? "" : (initialTitle ?? "Books"))
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     // MARK: - Header
@@ -111,7 +135,23 @@ struct RedesignedBrowseView: View {
             }
             Spacer()
 
-            iconButton("magnifyingglass", label: "Search everything") { showSearch = true }
+            // Authors sits here rather than in the tab bar. It is a way into
+            // the same books by a different axis, and the bar already carries
+            // four tabs and a scanner.
+            if initialSelection == nil {
+                NavigationLink { RedesignedAuthorsView() } label: {
+                    Image(systemName: "person.2")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText2)
+                        .frame(width: 38, height: 38)
+                        .background(Color.white.opacity(0.06), in: Circle())
+                        .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Authors")
+                .padding(.bottom, 4)
+                iconButton("magnifyingglass", label: "Search everything") { showSearch = true }
+            }
             sortMenu
             filterButton
         }
@@ -124,6 +164,7 @@ struct RedesignedBrowseView: View {
     /// hidden in the filter sheet. One library selected names it; several name
     /// how many; none names the whole collection.
     private var scopeLabel: String {
+        if let initialTitle { return initialTitle }
         let picked = vm.selection[.library]
         if picked.isEmpty { return "All libraries" }
         if picked.count == 1, let id = picked.first {
