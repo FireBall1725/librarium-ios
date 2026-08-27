@@ -30,6 +30,9 @@ struct RedesignedBrowseView: View {
     @State private var showSearch = false
     @State private var selected: BookOpenRequest?
     @State private var reauthAccount: ServerAccount?
+    @State private var views: [SavedList] = []
+    @State private var showSaveView = false
+    @State private var newViewName = ""
 
     /// The tab root owns a navigation stack; a pushed copy must not. Two nested
     /// stacks look like one until something is pushed onto the inner one, and
@@ -58,6 +61,19 @@ struct RedesignedBrowseView: View {
                             onTap: { reauthAccount = $0 }
                         )
                         searchPill
+                        if isRoot {
+                            SavedViewsBar(
+                                views: views,
+                                activeID: activeViewID,
+                                canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
+                                onOpen: { open($0) },
+                                onSave: {
+                                    newViewName = ""
+                                    showSaveView = true
+                                }
+                            )
+                            .padding(.bottom, 10)
+                        }
                         ActiveFilterPills(
                             selection: $vm.selection, facets: vm.facets,
                             onChange: { reload() }
@@ -72,7 +88,17 @@ struct RedesignedBrowseView: View {
             .toolbar(isRoot ? .hidden : .visible, for: .navigationBar)
             .task {
                 guard vm.books.isEmpty else { return }
-                if let initialSelection { vm.selection = initialSelection }
+                if let initialSelection {
+                    vm.selection = initialSelection
+                } else {
+                    await loadViews()
+                    // Open on the reader's default view when they have one, the
+                    // same as the web sidebar does. A saved default nobody
+                    // honours is a preference that does nothing.
+                    if let fallback = views.first(where: { $0.isDefault }) {
+                        vm.selection = BrowseSelection(query: fallback.filterQuery)
+                    }
+                }
                 await loadLibraries()
                 await vm.load(appState: appState)
             }
@@ -104,6 +130,9 @@ struct RedesignedBrowseView: View {
             }
             .sheet(item: $reauthAccount) { account in
                 ReauthSheet(account: account)
+            }
+            .sheet(isPresented: $showSaveView) {
+                SaveViewSheet(name: $newViewName) { saveView() }
             }
             .navigationDestination(item: $selected) { request in
                 RedesignedBookDetailView(library: request.library, book: request.book)
@@ -354,6 +383,39 @@ struct RedesignedBrowseView: View {
     private func reload() {
         searchTask?.cancel()
         Task { await vm.load(appState: appState) }
+    }
+
+    /// The saved view matching what is on screen, if one does. Compared on the
+    /// query string rather than by remembering which chip was tapped, so
+    /// changing one filter after opening a view unticks it honestly.
+    private var activeViewID: String? {
+        let current = vm.selection.queryString()
+        return views.first(where: { $0.filterQuery == current })?.id
+    }
+
+    private func open(_ view: SavedList) {
+        vm.selection = BrowseSelection(query: view.filterQuery)
+        reload()
+    }
+
+    /// Views live on one server. With several accounts the primary one is
+    /// where a new view goes, matching every other global preference in the
+    /// app rather than inventing a picker for it.
+    private func loadViews() async {
+        let client = appState.makePrimaryClient()
+        views = (try? await ListService(client: client).savedViews(surface: "books")) ?? []
+    }
+
+    private func saveView() {
+        let name = newViewName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let query = vm.selection.queryString()
+        Task {
+            let client = appState.makePrimaryClient()
+            try? await ListService(client: client)
+                .saveView(name: name, surface: "books", query: query)
+            await loadViews()
+        }
     }
 
     /// Every library on every account, so a book can be opened without another

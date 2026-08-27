@@ -139,6 +139,82 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertEqual(FacetLabels.ownership("shelf"), "On the shelf")
     }
 
+    // MARK: - Saved views
+
+    func testAViewRoundTripsThroughItsQueryString() {
+        // A view stores the same string the requests carry. If saving and
+        // reopening used two spellings of one filter they would drift, and the
+        // name on the chip would stop describing the list under it.
+        var original = BrowseSelection()
+        original[.ownership] = ["gap"]
+        original[.mediaType] = ["manga"]
+        original[.genre] = ["Horror", "Comedy"]
+        original.contributors = ["c-1"]
+        original.query = "bleach"
+
+        let reopened = BrowseSelection(query: original.queryString())
+        XCTAssertEqual(reopened[.ownership], ["gap"])
+        XCTAssertEqual(reopened[.mediaType], ["manga"])
+        XCTAssertEqual(reopened[.genre], ["Horror", "Comedy"])
+        XCTAssertEqual(reopened.contributors, ["c-1"])
+        XCTAssertEqual(reopened.query, "bleach")
+        XCTAssertEqual(reopened.queryString(), original.queryString())
+    }
+
+    func testAViewWithNoOwnershipMeansEveryState() {
+        // Not the shelf. A view saved on the web with the ownership filter
+        // cleared was looking at wishlist entries and gaps too, and defaulting
+        // here would quietly drop them from a list its author named.
+        let reopened = BrowseSelection(query: "type=manga")
+        XCTAssertTrue(reopened[.ownership].isEmpty)
+        XCTAssertEqual(reopened[.mediaType], ["manga"])
+    }
+
+    func testAViewSurvivesAValueWithASeparatorInIt() {
+        // Genres and tags are free text. A percent-encoded name has to come
+        // back whole rather than split into two filters that match nothing.
+        var original = BrowseSelection()
+        original[.genre] = ["Boys' Love"]
+        let reopened = BrowseSelection(query: original.queryString())
+        XCTAssertEqual(reopened[.genre], ["Boys' Love"])
+    }
+
+    func testSeriesViewsRoundTripToo() {
+        var original = SeriesSelection()
+        original[.status] = ["ongoing"]
+        original[.reading] = ["reading"]
+        original.query = "one piece"
+
+        let reopened = SeriesSelection(query: original.queryString())
+        XCTAssertEqual(reopened[.status], ["ongoing"])
+        XCTAssertEqual(reopened[.reading], ["reading"])
+        XCTAssertEqual(reopened.query, "one piece")
+    }
+
+    func testAStoredViewDecodesItsSurfaceAndFilter() throws {
+        // Taken off a running server. `surface` says which page it lands on and
+        // `filter` is nested rather than a bare string.
+        let json = Data("""
+        {"id":"v-1","name":"Default","kind":"smart","surface":"series",
+         "builtin_key":"default","filter":{"query":"status=ongoing"},"book_count":0}
+        """.utf8)
+        let view = try decoder().decode(SavedList.self, from: json)
+        XCTAssertEqual(view.surface, "series")
+        XCTAssertEqual(view.filterQuery, "status=ongoing")
+        XCTAssertTrue(view.isSmart)
+        XCTAssertTrue(view.isDefault)
+    }
+
+    func testAListFromBeforeSurfacesExistedLandsOnBooks() throws {
+        let json = Data("""
+        {"id":"l-1","name":"Childhood favourites","kind":"manual","book_count":1}
+        """.utf8)
+        let list = try decoder().decode(SavedList.self, from: json)
+        XCTAssertEqual(list.surface, "books")
+        XCTAssertEqual(list.filterQuery, "")
+        XCTAssertFalse(list.isSmart)
+    }
+
     // MARK: - Decoding what the server actually sends
 
     private func decoder() -> JSONDecoder {
