@@ -161,7 +161,7 @@ struct RedesignedSuggestionsView: View {
 
     private func loadLibraries() async {
         var found: [String: Library] = [:]
-        for account in appState.accounts where account.isServerBacked {
+        for account in [appState.activeSource].compactMap({ $0 }) where account.isServerBacked {
             let client = appState.makeClient(serverURL: account.url)
             guard let list = try? await LibraryService(client: client).list() else { continue }
             for var library in list {
@@ -209,7 +209,7 @@ final class SuggestionsViewModel {
 
         var collected: [Suggestion] = []
         var origins: [String: String] = [:]
-        for account in appState.accounts where account.isServerBacked {
+        for account in [appState.activeSource].compactMap({ $0 }) where account.isServerBacked {
             let client = appState.makeClient(serverURL: account.url)
             guard let list = try? await SuggestionService(client: client).list() else { continue }
             for s in list where s.status == "new" || s.status == "interested" {

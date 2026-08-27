@@ -464,7 +464,9 @@ final class RedesignedSeriesListViewModel {
         // `needsReauth` — the user can't re-auth while offline, but
         // their cached series should still be browsable. Auth state
         // is only relevant for the online path below.
-        let allRemote = appState.accounts.filter { $0.kind == .remote }
+        // One collection. A run belongs to a server, and two servers' runs
+        // listed together cannot share a filter, a sort or a saved view.
+        let allRemote = [appState.activeSource].compactMap { $0 }.filter { $0.kind == .remote }
         let offline = allRemote.allSatisfy { NetworkMonitor.shared.shouldSkipAPI(for: $0.url) }
         if !allRemote.isEmpty, offline {
             await loadOffline(remotes: allRemote, modelContainer: modelContainer)

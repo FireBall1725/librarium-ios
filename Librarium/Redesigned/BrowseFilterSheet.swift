@@ -17,6 +17,10 @@ struct BrowseFilterSheet: View {
     /// having if they move as the selection does, and that means a round trip
     /// per tap.
     let onChange: () -> Void
+    /// Whether the open collection lives on the device. Ownership, lists, shelf
+    /// locations and the average rating are server concepts, and a Lite library
+    /// has no wishlist, no gap detection and no other readers to average.
+    var isLocal = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -24,7 +28,7 @@ struct BrowseFilterSheet: View {
         NavigationStack {
             List {
                 ForEach(BrowseFacet.allCases) { facet in
-                    let values = facets[facet]
+                    let values = isLocal && !LocalBrowse.answers(facet) ? [] : facets[facet]
                     if !values.isEmpty {
                         Section {
                             ForEach(values) { value in

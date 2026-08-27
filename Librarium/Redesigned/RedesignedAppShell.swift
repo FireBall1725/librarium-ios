@@ -33,8 +33,23 @@ struct RedesignedAppShell: View {
     /// scanner finds the book already on a shelf and the user asks to
     /// open it; cleared by the grid after it pushes.
     @State private var pendingOpenBookID: String?
+    /// Shown when the reader asks to change collections rather than at launch,
+    /// which is why it is separate from `needsSourceChoice`.
+    @State private var showSourcePicker = false
 
     var body: some View {
+        // Nothing is scoped until a collection is open, so the picker replaces
+        // the shell rather than sitting on top of it: a tab bar over a screen
+        // that has no source to read is four tabs that cannot answer anything.
+        if appState.needsSourceChoice {
+            SourcePickerView()
+        } else {
+            shell
+        }
+    }
+
+    @ViewBuilder
+    private var shell: some View {
         ZStack(alignment: .bottom) {
             // Each tab's content is kept alive in a ZStack and shown via
             // opacity rather than swapped with `if/else`. iOS 26's
@@ -87,6 +102,10 @@ struct RedesignedAppShell: View {
             )
             .padding(.bottom, 4)
         }
+        .sheet(isPresented: $showSourcePicker) {
+            SourcePickerView(onCancel: { showSourcePicker = false })
+        }
+        .environment(\.switchSource, { showSourcePicker = true })
         .fullScreenCover(isPresented: $showScan) {
             RedesignedScanFlow(
                 onClose: { showScan = false },

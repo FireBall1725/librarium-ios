@@ -297,7 +297,10 @@ final class AuthorsViewModel {
         isLoading = true
         defer { isLoading = false }
 
-        let accounts = appState.accounts.filter(\.isServerBacked)
+        // The open collection only. Two servers are two sets of people, and
+        // merging them puts one server's contributor beside another's with no
+        // way to tell which shelf a tap will open.
+        let accounts = [appState.activeSource].compactMap { $0 }.filter(\.isServerBacked)
         let picked = selectedRoles
 
         var collected: [AuthorIndexEntry] = []

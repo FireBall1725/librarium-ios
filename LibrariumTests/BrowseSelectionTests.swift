@@ -138,6 +138,26 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertFalse(ServerAccount.isLocalURL("https://localhost:8080"))
     }
 
+    func testALiteCollectionOffersOnlyTheDimensionsItCanAnswer() {
+        // Ownership, lists, shelf locations and the average rating are server
+        // concepts: a Lite library has no wishlist, no gap detection and no
+        // other readers to average. Offering those filters would be offering a
+        // control that can only ever return nothing, which reads as an empty
+        // collection rather than an inapplicable question.
+        XCTAssertTrue(LocalBrowse.answers(.mediaType))
+        XCTAssertTrue(LocalBrowse.answers(.tag))
+        XCTAssertTrue(LocalBrowse.answers(.genre))
+        XCTAssertTrue(LocalBrowse.answers(.readStatus))
+        XCTAssertTrue(LocalBrowse.answers(.myRating))
+        XCTAssertTrue(LocalBrowse.answers(.library))
+
+        XCTAssertFalse(LocalBrowse.answers(.ownership))
+        XCTAssertFalse(LocalBrowse.answers(.shelf))
+        XCTAssertFalse(LocalBrowse.answers(.location))
+        XCTAssertFalse(LocalBrowse.answers(.rating))
+        XCTAssertFalse(LocalBrowse.answers(.favourite))
+    }
+
     // MARK: - Cancellation
 
     func testACancelledRequestIsNotAFailure() {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// The books surface: everything the reader can see, in one grid.
@@ -33,6 +34,7 @@ struct RedesignedBrowseView: View {
     var isActive = true
 
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
 
     @State private var vm = BrowseViewModel()
     @State private var libraries: [String: Library] = [:]
@@ -73,7 +75,7 @@ struct RedesignedBrowseView: View {
                             onTap: { reauthAccount = $0 }
                         )
                         searchPill
-                        if isRoot {
+                        if isRoot && !vm.isLocal {
                             SavedViewsBar(
                                 views: views,
                                 activeID: activeViewID,
@@ -115,11 +117,11 @@ struct RedesignedBrowseView: View {
                     }
                 }
                 await loadLibraries()
-                await vm.load(appState: appState)
+                await vm.load(appState: appState, local: localBrowse)
             }
             .refreshable {
                 await loadLibraries()
-                await vm.load(appState: appState)
+                await vm.load(appState: appState, local: localBrowse)
             }
             .onChange(of: vm.selection.query) { _, _ in
                 searchTask?.cancel()
@@ -129,7 +131,7 @@ struct RedesignedBrowseView: View {
                     // like the list is following along.
                     try? await Task.sleep(for: .milliseconds(350))
                     guard !Task.isCancelled else { return }
-                    await vm.load(appState: appState)
+                    await vm.load(appState: appState, local: localBrowse)
                 }
             }
             .onChange(of: vm.sort) { _, _ in reload() }
@@ -137,7 +139,8 @@ struct RedesignedBrowseView: View {
             .sheet(isPresented: $showFilters) {
                 BrowseFilterSheet(
                     selection: $vm.selection, facets: vm.facets,
-                    onChange: { reload() }
+                    onChange: { reload() },
+                    isLocal: vm.isLocal
                 )
                 .presentationDetents([.large])
             }
@@ -191,7 +194,7 @@ struct RedesignedBrowseView: View {
             // every visit; the surfaces you cross to occasionally go behind
             // the overflow, which is where the web page puts them too.
             if isRoot { moreMenu }
-            groupButton
+            if !vm.isLocal { groupButton }
             sortMenu
             filterButton
         }
@@ -504,9 +507,15 @@ struct RedesignedBrowseView: View {
 
     // MARK: - Actions
 
+    /// The device-backed engine, when the open collection is a Lite one.
+    private var localBrowse: LocalBrowse? {
+        guard let source = appState.activeSource, !source.isServerBacked else { return nil }
+        return LocalBrowse(modelContainer: modelContext.container, serverURL: source.url)
+    }
+
     private func reload() {
         searchTask?.cancel()
-        Task { await vm.load(appState: appState) }
+        Task { await vm.load(appState: appState, local: localBrowse) }
     }
 
     /// Opens the book the scanner just found.
@@ -569,7 +578,7 @@ struct RedesignedBrowseView: View {
     /// round trip and the library facet can be named before its counts arrive.
     private func loadLibraries() async {
         var found: [String: Library] = [:]
-        for account in appState.accounts where account.isServerBacked {
+        for account in [appState.activeSource].compactMap({ $0 }) where account.isServerBacked {
             let client = appState.makeClient(serverURL: account.url)
             guard let list = try? await LibraryService(client: client).list() else { continue }
             for var library in list {

@@ -223,7 +223,7 @@ struct RedesignedLoansView: View {
 
     private func loadLibraries() async {
         var found: [String: Library] = [:]
-        for account in appState.accounts where account.isServerBacked {
+        for account in [appState.activeSource].compactMap({ $0 }) where account.isServerBacked {
             let client = appState.makeClient(serverURL: account.url)
             guard let list = try? await LibraryService(client: client).list() else { continue }
             for var library in list {
@@ -267,7 +267,7 @@ final class LoansViewModel {
         isLoading = true
         defer { isLoading = false }
 
-        let accounts = appState.accounts.filter(\.isServerBacked)
+        let accounts = [appState.activeSource].compactMap { $0 }.filter(\.isServerBacked)
         var collected: [Loan] = []
         var origins: [String: String] = [:]
 

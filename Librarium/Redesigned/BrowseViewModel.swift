@@ -51,11 +51,33 @@ final class BrowseViewModel {
     /// tries again rather than leaving an empty shelf on screen forever.
     private(set) var hasLoaded = false
 
-    func load(appState: AppState) async {
+    /// Set when the collection has no server behind it, so the surfaces can
+    /// leave out the dimensions and the actions a Lite library has no answer
+    /// for rather than offering controls that can only return nothing.
+    var isLocal = false
+
+    func load(appState: AppState, local: LocalBrowse? = nil) async {
         isLoading = true
         error = nil
         page = 1
         defer { isLoading = false }
+
+        // A Lite collection answers from the device. Everything is on one page
+        // because everything is already in memory: a shelf held in SwiftData
+        // has no next page to fetch.
+        if let local {
+            isLocal = true
+            let result = local.page(selection: selection, sort: sort)
+            books = result.books
+            groups = []
+            total = result.books.count
+            bookTotal = result.books.count
+            facets = result.facets
+            serverURL = [:]
+            hasLoaded = true
+            return
+        }
+        isLocal = false
 
         let targets = Self.targets(appState)
         guard !targets.isEmpty else {
@@ -97,6 +119,8 @@ final class BrowseViewModel {
     }
 
     func loadMore(appState: AppState) async {
+        // A local collection arrived whole.
+        guard !isLocal else { return }
         guard hasMore, !isLoadingMore, !isLoading else { return }
         isLoadingMore = true
         defer { isLoadingMore = false }
@@ -144,13 +168,14 @@ final class BrowseViewModel {
         let client: APIClient
     }
 
+    /// The one collection being read.
+    ///
+    /// One, not all of them: two servers are two collections, and a filter or a
+    /// saved view from one has no meaning applied to the other's books. The
+    /// reader picks which, and everything here answers for that one.
     private static func targets(_ appState: AppState) -> [Target] {
-        // Lite libraries live in SwiftData behind a `local://` URL that
-        // URLSession cannot open, so including one costs a timeout per page
-        // and returns nothing.
-        appState.accounts
-            .filter(\.isServerBacked)
-            .map { Target(url: $0.url, client: appState.makeClient(serverURL: $0.url)) }
+        guard let source = appState.activeSource, source.isServerBacked else { return [] }
+        return [Target(url: source.url, client: appState.makeClient(serverURL: source.url))]
     }
 
     /// What one account answered, or why it did not.
