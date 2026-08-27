@@ -40,6 +40,7 @@ struct RedesignedBrowseView: View {
     @State private var showFilters = false
     @State private var showSearch = false
     @State private var selected: BookOpenRequest?
+    @State private var selectedGroup: AuthorSelection?
     @State private var reauthAccount: ServerAccount?
     @State private var views: [SavedList] = []
     @State private var showSaveView = false
@@ -152,6 +153,12 @@ struct RedesignedBrowseView: View {
             .navigationDestination(item: $selected) { request in
                 RedesignedBookDetailView(library: request.library, book: request.book)
             }
+            .navigationDestination(item: $selectedGroup) { pick in
+                RedesignedBrowseView(
+                    initialSelection: pick.selection,
+                    initialTitle: pick.name
+                )
+            }
             .alert("Error", isPresented: Binding(
                 get: { vm.error != nil }, set: { if !$0 { vm.error = nil } }
             )) {
@@ -207,8 +214,10 @@ struct RedesignedBrowseView: View {
     }
 
     private var countTitle: String {
-        if vm.isLoading && vm.books.isEmpty { return "Loading…" }
-        let count = vm.total
+        if vm.isLoading && !vm.hasLoaded { return "Loading…" }
+        // Rows when grouped, books when not. Sixty volumes of one run are
+        // sixty books and one row, and the header says books.
+        let count = vm.selection.grouped ? vm.bookTotal : vm.total
         if count == 0 { return "No books" }
         return "\(count.formatted()) book\(count == 1 ? "" : "s")"
     }
@@ -275,9 +284,36 @@ struct RedesignedBrowseView: View {
         .padding(.bottom, 4)
     }
 
+    /// Any server will do for a group's cover: the URL the API builds is
+    /// absolute from the host's root and a run belongs to one instance.
+    private var primaryServerURL: String {
+        libraries.values.first?.serverURL ?? ""
+    }
+
+    /// Opening a run shows its volumes, with the grouping off so it does not
+    /// collapse straight back into the row that was just tapped.
+    private func openGroup(_ group: SeriesGroup) {
+        var narrowed = vm.selection
+        narrowed.series = [group.seriesId]
+        narrowed.grouped = false
+        selectedGroup = AuthorSelection(
+            id: group.seriesId, name: group.seriesName, selection: narrowed)
+    }
+
     @ViewBuilder
     private var sortMenu: some View {
         Menu {
+            Button {
+                vm.selection.grouped.toggle()
+                reload()
+            } label: {
+                if vm.selection.grouped {
+                    Label("Group by series", systemImage: "checkmark")
+                } else {
+                    Text("Group by series")
+                }
+            }
+            Divider()
             ForEach(BookSortOption.allCases) { option in
                 Button {
                     vm.sort = option
@@ -341,6 +377,61 @@ struct RedesignedBrowseView: View {
 
     @ViewBuilder
     private var grid: some View {
+        if vm.selection.grouped {
+            groupedGrid
+        } else {
+            flatGrid
+        }
+    }
+
+    /// Runs collapsed into one tile each, standalone books beside them.
+    ///
+    /// The reason this is the default view on the web: a shelf of 1,425 books
+    /// where 740 of them are volumes of forty manga runs reads as forty runs
+    /// and a few hundred books, not as an alphabet of near-identical spines.
+    @ViewBuilder
+    private var groupedGrid: some View {
+        if vm.isLoading && vm.groups.isEmpty {
+            ProgressView()
+                .frame(maxWidth: .infinity, minHeight: 240)
+                .tint(Theme.Colors.appText2)
+        } else if vm.groups.isEmpty {
+            emptyState
+        } else {
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                ForEach(vm.groups) { row in
+                    switch row {
+                    case .book(let book):
+                        Button { open(book) } label: {
+                            BookTile(book: book, serverURL: vm.serverURL[book.id] ?? "")
+                        }
+                        .buttonStyle(.plain)
+                    case .series(let group):
+                        Button { openGroup(group) } label: {
+                            SeriesGroupTile(group: group, serverURL: primaryServerURL)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.horizontal, 18)
+            .onAppear {
+                if vm.hasMore, !vm.isLoadingMore {
+                    Task { await vm.loadMore(appState: appState) }
+                }
+            }
+
+            if vm.isLoadingMore {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .tint(Theme.Colors.appText2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var flatGrid: some View {
         if vm.isLoading && vm.books.isEmpty {
             ProgressView()
                 .frame(maxWidth: .infinity, minHeight: 240)

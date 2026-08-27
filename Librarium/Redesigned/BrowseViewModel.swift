@@ -17,7 +17,13 @@ final class BrowseViewModel {
     // MARK: - State
 
     var books: [Book] = []
+    /// The same list with runs collapsed, when grouping is on. Held separately
+    /// from `books` because the rows are a different shape, not a different
+    /// ordering of the same one.
+    var groups: [GroupedRow] = []
     var total = 0
+    /// Books behind the rows. Different from `total` when grouping is on.
+    var bookTotal = 0
     var facets = BookFacets()
     var selection = BrowseSelection()
     var sort: BookSortOption = .titleAsc
@@ -34,7 +40,9 @@ final class BrowseViewModel {
     /// hand back the same id for different books.
     private(set) var serverURL: [String: String] = [:]
 
-    var hasMore: Bool { books.count < total }
+    var hasMore: Bool {
+        selection.grouped ? groups.count < total : books.count < total
+    }
 
     // MARK: - Loading
 
@@ -66,13 +74,26 @@ final class BrowseViewModel {
                                           sort: sort, perPage: perPage)
         async let counted = Self.fetchFacets(targets: targets, selection: selection)
 
-        let (rows, count, origins, failure) = await listed
-        books = rows
-        total = count
-        serverURL = origins
-        error = failure
-        facets = await counted
-        hasLoaded = failure == nil && !Task.isCancelled
+        let page = await listed
+        let counts = await counted
+
+        // Nothing is replaced when the attempt came back empty-handed. A
+        // cancelled refresh used to wipe a good list and leave "No books" over
+        // a shelf of 1,425, which is the worst of both: no error to explain it
+        // and no books to look at.
+        guard !page.rows.isEmpty || page.emptyIsReal else {
+            error = page.failure
+            return
+        }
+
+        books = page.rows
+        groups = page.groups
+        total = page.total
+        bookTotal = page.bookTotal
+        serverURL = page.origins
+        error = page.failure
+        if !counts.isEmpty { facets = counts }
+        hasLoaded = page.failure == nil && !Task.isCancelled
     }
 
     func loadMore(appState: AppState) async {
@@ -81,11 +102,24 @@ final class BrowseViewModel {
         defer { isLoadingMore = false }
 
         let next = page + 1
-        let (rows, count, origins, _) = await Self.fetchPage(
+        let result = await Self.fetchPage(
             next, targets: Self.targets(appState), selection: selection,
             sort: sort, perPage: perPage)
-        guard !rows.isEmpty else { return }
+        let rows = result.rows
+        let origins = result.origins
+        let count = result.total
+        guard !rows.isEmpty || !result.groups.isEmpty else { return }
         page = next
+        if selection.grouped {
+            var seenGroups = Set(groups.map { $0.id })
+            for row in result.groups where !seenGroups.contains(row.id) {
+                seenGroups.insert(row.id)
+                groups.append(row)
+            }
+            total = max(total, count)
+            serverURL.merge(origins) { current, _ in current }
+            return
+        }
         // By id, not by count. Two accounts paginate independently, so the same
         // book can arrive on two pages when one server runs out before the
         // other, and appending blind puts it in the grid twice.
@@ -123,25 +157,50 @@ final class BrowseViewModel {
     private struct PageResult: @unchecked Sendable {
         let url: String
         let paged: Paged<Book>?
+        let grouped: GroupedPage?
         let failure: String?
+    }
+
+    /// A page, assembled across accounts.
+    struct Page {
+        var rows: [Book] = []
+        var groups: [GroupedRow] = []
+        var total = 0
+    /// Books behind the rows. Different from `total` when grouping is on.
+    var bookTotal = 0
+        var origins: [String: String] = [:]
+        var failure: String?
+        /// Whether an empty answer is the truth rather than a request that
+        /// never landed. Only then is it safe to replace what is on screen.
+        var emptyIsReal = false
     }
 
     private static func fetchPage(
         _ page: Int, targets: [Target], selection: BrowseSelection,
         sort: BookSortOption, perPage: Int
-    ) async -> ([Book], Int, [String: String], String?) {
+    ) async -> Page {
+        var out = Page()
         var rows: [Book] = []
         var total = 0
+    /// Books behind the rows. Different from `total` when grouping is on.
+    var bookTotal = 0
         var origins: [String: String] = [:]
         var failures: [String] = []
+        var answered = 0
 
         await withTaskGroup(of: PageResult.self) { group in
             for target in targets {
                 group.addTask {
                     do {
-                        let paged = try await MeBrowseService(client: target.client).books(
+                        let service = MeBrowseService(client: target.client)
+                        if selection.grouped {
+                            let page = try await service.grouped(
+                                selection: selection, sort: sort, page: page, perPage: perPage)
+                            return PageResult(url: target.url, paged: nil, grouped: page, failure: nil)
+                        }
+                        let paged = try await service.books(
                             selection: selection, sort: sort, page: page, perPage: perPage)
-                        return PageResult(url: target.url, paged: paged, failure: nil)
+                        return PageResult(url: target.url, paged: paged, grouped: nil, failure: nil)
                     } catch {
                         // Kept rather than swallowed. Every failure here used to
                         // render as an empty shelf, which is the same picture a
@@ -151,17 +210,28 @@ final class BrowseViewModel {
                         // that goes away mid-request cancels it, and reporting
                         // that puts "cancelled" in front of someone who did
                         // nothing but switch tabs.
-                        return PageResult(url: target.url, paged: nil,
+                        return PageResult(url: target.url, paged: nil, grouped: nil,
                                           failure: isCancellation(error)
                                               ? nil : error.localizedDescription)
                     }
                 }
             }
             for await result in group {
+                if let grouped = result.grouped {
+                    answered += 1
+                    total += grouped.total
+                    out.bookTotal += grouped.bookTotal
+                    for row in grouped.items {
+                        if case .book(let book) = row { origins[book.id] = result.url }
+                        out.groups.append(row)
+                    }
+                    continue
+                }
                 guard let paged = result.paged else {
                     if let failure = result.failure { failures.append(failure) }
                     continue
                 }
+                answered += 1
                 total += paged.total
                 for book in paged.items {
                     origins[book.id] = result.url
@@ -177,13 +247,21 @@ final class BrowseViewModel {
         if targets.count > 1 {
             rows = merge(rows, by: sort)
         }
+        out.rows = rows
+        out.total = total
+        out.origins = origins
         // Only when nothing came back. One server of two being unreachable is
         // a partial answer, not an error worth an alert over the half that
         // loaded.
-        let failure = rows.isEmpty ? failures.first : nil
-        return (rows, total, origins, failure)
+        out.failure = rows.isEmpty && out.groups.isEmpty ? failures.first : nil
+        // Every account answered, so an empty result is a genuinely empty
+        // shelf rather than a request that was called off.
+        out.emptyIsReal = answered == targets.count
+        return out
     }
 
+    /// Whether the counts came back with anything in them, so a failed facet
+    /// request does not empty a filter sheet that was already populated.
     private static func fetchFacets(targets: [Target], selection: BrowseSelection) async -> BookFacets {
         var merged = BookFacets()
         await withTaskGroup(of: BookFacets?.self) { group in

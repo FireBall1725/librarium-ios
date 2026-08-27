@@ -219,13 +219,46 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertEqual(reopened.queryString(), original.queryString())
     }
 
-    func testAViewWithNoOwnershipMeansEveryState() {
-        // Not the shelf. A view saved on the web with the ownership filter
-        // cleared was looking at wishlist entries and gaps too, and defaulting
-        // here would quietly drop them from a list its author named.
+    func testAViewWithNoOwnershipMeansTheShelf() {
+        // Absent is the default, not "no filter". The web omits ownership from
+        // a view's query string when it is the ordinary shelf selection, so
+        // reading absence as every state opened a saved view on the wishlist,
+        // the suggestions and every missing volume mixed in.
         let reopened = BrowseSelection(query: "type=manga")
-        XCTAssertTrue(reopened[.ownership].isEmpty)
+        XCTAssertEqual(reopened[.ownership], BrowseSelection.defaultOwnership)
         XCTAssertEqual(reopened[.mediaType], ["manga"])
+    }
+
+    func testClearingOwnershipSurvivesBeingSaved() {
+        // Cleared needs a value of its own. An empty one reads as absent and
+        // snaps back to the shelf, which makes "show me everything" impossible
+        // to save.
+        var selection = BrowseSelection()
+        selection[.ownership] = []
+        XCTAssertEqual(query(selection).isEmpty, true)
+        XCTAssertEqual(selection.queryString(), "own=any")
+        XCTAssertTrue(BrowseSelection(query: "own=any")[.ownership].isEmpty)
+    }
+
+    func testTheDefaultOwnershipIsOmittedFromASavedView() {
+        // So an ordinary view stays clean, and matches what the web writes for
+        // the same selection.
+        XCTAssertEqual(BrowseSelection().queryString(), "")
+    }
+
+    func testGroupingRoundTrips() {
+        var selection = BrowseSelection()
+        selection.grouped = true
+        XCTAssertEqual(selection.queryString(), "group=series")
+        XCTAssertTrue(BrowseSelection(query: "group=series").grouped)
+    }
+
+    func testOpeningARunTurnsGroupingOff() {
+        // Collapsing a run back into itself shows one row holding everything on
+        // screen.
+        let inside = BrowseSelection(query: "group=series&series=s-1")
+        XCTAssertFalse(inside.grouped)
+        XCTAssertEqual(inside.series, ["s-1"])
     }
 
     func testAViewSurvivesAValueWithASeparatorInIt() {
