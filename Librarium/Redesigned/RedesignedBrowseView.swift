@@ -235,6 +235,9 @@ struct RedesignedBrowseView: View {
             NavigationLink { RedesignedLoansView() } label: {
                 Label("Loans", systemImage: "arrow.left.arrow.right")
             }
+            NavigationLink { RedesignedSuggestionsView() } label: {
+                Label("Suggestions", systemImage: "sparkles")
+            }
             Button { showSearch = true } label: {
                 Label("Search everything", systemImage: "magnifyingglass")
             }
