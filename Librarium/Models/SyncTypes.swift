@@ -7,6 +7,19 @@ struct SyncChangesResponse: Decodable {
     let ops: [SyncOp]
     let serverTime: String
     let hasMore: Bool
+
+    enum CodingKeys: String, CodingKey { case ops, serverTime, hasMore }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Null, not an empty array. Go serialises a nil slice as `null`, and
+        // "nothing has changed since you last asked" is the ordinary answer to
+        // this endpoint, so the strict decode failed on every launch of a
+        // caught-up client. The sync then reported an error and did nothing.
+        ops = try c.decodeIfPresent([SyncOp].self, forKey: .ops) ?? []
+        serverTime = try c.decodeIfPresent(String.self, forKey: .serverTime) ?? ""
+        hasMore = try c.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+    }
 }
 
 struct SyncOp: Decodable {

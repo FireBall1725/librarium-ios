@@ -155,6 +155,41 @@ final class SeriesBrowseTests: XCTestCase {
         XCTAssertTrue(try loan(due: "2020-01-01T12:30:00Z").isOverdue)
     }
 
+    // MARK: - Sync
+
+    func testNothingToSyncDecodes() throws {
+        // Go marshals a nil slice as null, and "nothing has changed since you
+        // last asked" is the ordinary answer to this endpoint. A strict decode
+        // failed on it, so sync errored at every launch of a client that was
+        // already up to date — which is every launch after the first.
+        let json = Data("""
+        {"ops":null,"server_time":"2026-08-27T08:05:04Z","has_more":false}
+        """.utf8)
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let response = try d.decode(SyncChangesResponse.self, from: json)
+
+        XCTAssertTrue(response.ops.isEmpty)
+        XCTAssertFalse(response.hasMore)
+        XCTAssertEqual(response.serverTime, "2026-08-27T08:05:04Z")
+    }
+
+    func testSyncOpsStillDecodeWhenThereAreSome() throws {
+        // The lenient read must not become a read that ignores the payload.
+        let json = Data("""
+        {"ops":[{"entity_type":"user_book","entity_id":"1453DD78-8E86-50DF-B4A8-F76D260BFAE0",
+                 "field":"rating","updated_at":"2026-08-27T08:05:04Z"}],
+         "server_time":"2026-08-27T08:05:04Z","has_more":true}
+        """.utf8)
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let response = try d.decode(SyncChangesResponse.self, from: json)
+
+        XCTAssertEqual(response.ops.count, 1)
+        XCTAssertEqual(response.ops.first?.field, "rating")
+        XCTAssertTrue(response.hasMore)
+    }
+
     // MARK: - Wishlist
 
     func testAWishNeedNotBeACatalogueRow() throws {
