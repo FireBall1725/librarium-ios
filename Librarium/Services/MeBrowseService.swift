@@ -26,6 +26,22 @@ struct MeBrowseService {
         return try await client.get(Self.path("/api/v1/me/books", items))
     }
 
+    /// The same list with each run collapsed into one row.
+    ///
+    /// A separate endpoint rather than a parameter on the list, because the
+    /// rows are a different shape: a run is not a book and pretending otherwise
+    /// would mean every client unpacking a union out of the book fields.
+    func grouped(selection: BrowseSelection, sort: BookSortOption, page: Int, perPage: Int)
+        async throws -> GroupedPage
+    {
+        var items = selection.queryItems()
+        items.append(URLQueryItem(name: "page", value: String(page)))
+        items.append(URLQueryItem(name: "per_page", value: String(perPage)))
+        items.append(URLQueryItem(name: "sort", value: sort.field))
+        items.append(URLQueryItem(name: "sort_dir", value: sort.dir))
+        return try await client.get(Self.path("/api/v1/me/books/grouped", items))
+    }
+
     /// The counts for every dimension, from one request.
     ///
     /// Sent with the same selection as the list, because each dimension is

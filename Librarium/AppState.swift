@@ -50,6 +50,7 @@ final class AppState {
         migrateIfNeeded()
         loadAccounts()
         backfillPrimaryIfNeeded()
+        loadActiveSource()
     }
 
     // MARK: - Account management
@@ -168,6 +169,7 @@ final class AppState {
         KeychainService.shared.delete("refresh_\(id.uuidString)")
         accounts.removeAll { $0.id == id }
         if activeAccountID == id { activeAccountID = nil }
+        if activeSourceID == id { clearActiveSource() }
         if primaryAccountID == id {
             primaryAccountID = nil
             savePrimary()
@@ -213,12 +215,74 @@ final class AppState {
         }
         accounts = []
         activeAccountID = nil
+        clearActiveSource()
         primaryAccountID = nil
         UserDefaults.standard.removeObject(forKey: "server_accounts")
         UserDefaults.standard.removeObject(forKey: "primary_account_id")
         for url in urls {
             LibraryOfflineStore.shared.purgeLibraries(forServerURL: url)
         }
+    }
+
+    // MARK: - Active source
+
+    /// Which collection the browse surfaces read.
+    ///
+    /// A Librarium install is one server's collection, or one Lite library on
+    /// this device. Two servers are two collections that happen to be reachable
+    /// from the same phone: their libraries, tags, lists and saved views are
+    /// each their own, and a view saved on one has no meaning applied to books
+    /// from the other. So the surfaces read one source at a time and the reader
+    /// says which, rather than being handed a merge nobody asked for.
+    private var activeSourceID: UUID?
+
+    /// Every collection this install can open, servers and Lite alike. Lite is
+    /// not a lesser kind of account here; it is a database like any other.
+    var sources: [ServerAccount] { accounts }
+
+    var activeSource: ServerAccount? {
+        if let id = activeSourceID, let match = accounts.first(where: { $0.id == id }) {
+            return match
+        }
+        // One source needs no choosing. Making somebody pick from a list of one
+        // is a screen that exists to be dismissed.
+        return accounts.count == 1 ? accounts.first : nil
+    }
+
+    /// True when there is more than one collection and none has been opened.
+    var needsSourceChoice: Bool { accounts.count > 1 && activeSource == nil }
+
+    func setActiveSource(id: UUID) {
+        guard accounts.contains(where: { $0.id == id }) else { return }
+        activeSourceID = id
+        activeAccountID = id
+        UserDefaults.standard.set(id.uuidString, forKey: activeSourceKey)
+    }
+
+    /// Back to the picker. Not a sign-out: the other collections stay
+    /// connected, and this is only which one is being looked at.
+    func clearActiveSource() {
+        activeSourceID = nil
+        UserDefaults.standard.removeObject(forKey: activeSourceKey)
+    }
+
+    private var activeSourceKey: String { "active_source_id" }
+
+    private func loadActiveSource() {
+        guard let raw = UserDefaults.standard.string(forKey: activeSourceKey),
+              let id = UUID(uuidString: raw) else { return }
+        activeSourceID = id
+    }
+
+    /// A client for the active source, when a server is behind it.
+    ///
+    /// nil for a Lite source, which is not a failure: Lite keeps everything on
+    /// device and there is nothing to ask. Callers branch on that rather than
+    /// building a client pointed at a `local://` URL, which fails every request
+    /// with "unsupported URL" and reads as a server with nothing on it.
+    func makeServerClient() -> APIClient? {
+        guard let source = activeSource, source.isServerBacked else { return nil }
+        return makeClient(serverURL: source.url)
     }
 
     // MARK: - Client factory
@@ -254,6 +318,11 @@ final class AppState {
     /// Client bound to the user-selected primary server — used for global
     /// lookups (e.g. ISBN metadata) that should not drift based on which
     /// library the user happens to be viewing.
+    ///
+    /// Primary does not mean "a server". A Lite account can be primary, and
+    /// this hands back a client pointed at its `local://` URL, which every
+    /// network call then fails on. For anything that has to reach a server, use
+    /// `makeServerClient()` above.
     func makePrimaryClient() -> APIClient {
         guard let account = primaryAccount else {
             return APIClient(baseURL: "")

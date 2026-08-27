@@ -46,6 +46,24 @@ struct ServerAccount: Identifiable {
     static func localURL(for id: UUID) -> String {
         "local://\(id.uuidString)"
     }
+
+    /// Whether a URL belongs to a Lite account rather than a server.
+    ///
+    /// `local://` is not a scheme URLSession can open. A request built on one
+    /// fails with "unsupported URL", and a caller that swallows errors reads
+    /// that as a server with nothing on it: that is what hid every saved view
+    /// on an install whose primary account was a Lite one.
+    static func isLocalURL(_ url: String) -> Bool {
+        url.hasPrefix("local://")
+    }
+
+    /// True when there is a real server behind this account. The kind and the
+    /// URL are both checked because either can be the one that is right: a
+    /// synthetic URL predates the kind field, and the kind is what a freshly
+    /// created Lite account carries.
+    var isServerBacked: Bool {
+        kind != .local && !Self.isLocalURL(url)
+    }
 }
 
 struct ServerAccountMeta: Codable {

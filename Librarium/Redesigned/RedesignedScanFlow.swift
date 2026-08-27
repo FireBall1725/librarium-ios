@@ -524,6 +524,10 @@ struct RedesignedScanResultView: View {
     /// so users can pick "manga" / "comic book" / etc. instead of
     /// accepting whatever the lookup defaulted to. Keyed by server URL.
     @State private var mediaTypesByServer: [String: [MediaType]] = [:]
+    /// Why the media types are not on screen, when they are not. "Loading…"
+    /// forever is what a swallowed failure looks like, and it is unfalsifiable:
+    /// nothing on the screen says whether it is still trying.
+    @State private var mediaTypesError: String?
     @State private var selectedMediaTypeID: String?
     /// Library tags loaded for the currently-selected library. The user
     /// taps to toggle membership; the IDs ride along on the create.
@@ -535,20 +539,28 @@ struct RedesignedScanResultView: View {
     @State private var showMediaTypeSheet = false
     @State private var moreOpen = false
 
-    private let formats: [(id: String, label: String)] = [
-        ("paperback", "Paperback"),
-        ("hardcover", "Hardcover"),
-        ("ebook", "E-book"),
-        ("audiobook", "Audiobook")
-    ]
+    /// Read from the server rather than written out here. The hardcoded list
+    /// was already two short — the vocabulary has `comic` and `box_set` — and a
+    /// copy of a controlled list is a copy that drifts the next time one is
+    /// added.
+    @State private var formatsByServer: [String: [VocabularyTerm]] = [:]
+
+    private var formats: [VocabularyTerm] {
+        guard let library = currentLibrary else { return EditionFormatLabels.fallback }
+        return formatsByServer[library.serverURL] ?? EditionFormatLabels.fallback
+    }
 
     private enum ReadStatus: Hashable {
-        case unread, reading, read
+        // Want-to-read is the one that matters standing in a shop: the book is
+        // in your hand, you are not buying it today, and the scanner is the
+        // only place that can record it before you put it back.
+        case unread, wantToRead, reading, read
         var apiValue: String {
             switch self {
-            case .unread:  return "unread"
-            case .reading: return "reading"
-            case .read:    return "read"
+            case .unread:     return "unread"
+            case .wantToRead: return "want_to_read"
+            case .reading:    return "reading"
+            case .read:       return "read"
             }
         }
     }
@@ -562,6 +574,7 @@ struct RedesignedScanResultView: View {
                     topBar
                     coverHero
                     if lookup != nil {
+                        ownershipCard
                         librarySection
                         mediaAndStatusRow
                         moreOptionsSection
@@ -612,9 +625,17 @@ struct RedesignedScanResultView: View {
     /// Triggered on first lookup and whenever the user switches library.
     /// Cache media types per server so re-selecting a library on the
     /// same server doesn't re-hit the network.
+    private var currentLibrary: Library? {
+        libraries.first(where: { $0.clientKey == selectedLibraryKey }) ?? libraries.first
+    }
+
     private func loadLibraryDependentMetadata() async {
-        guard let library = libraries.first(where: { $0.clientKey == selectedLibraryKey })
-            ?? libraries.first else { return }
+        guard let library = currentLibrary else {
+            print("📕 [Scan] metadata skipped: no library (\(libraries.count) loaded, key=\(selectedLibraryKey ?? "nil"))")
+            return
+        }
+
+        print("📕 [Scan] metadata for \(library.name) @ \(library.serverURL)")
 
         // Lite libraries don't have a server-side media type catalog.
         // Seed a small hardcoded list so the picker has options and
@@ -645,18 +666,29 @@ struct RedesignedScanResultView: View {
         let client = appState.makeClient(serverURL: library.serverURL)
 
         if mediaTypesByServer[library.serverURL] == nil {
-            if let types = try? await MediaTypeService(client: client).list() {
+            do {
+                let types = try await MediaTypeService(client: client).list()
                 mediaTypesByServer[library.serverURL] = types
+                mediaTypesError = types.isEmpty ? "This server has no media types" : nil
                 // Pick a sensible default — prefer the lookup's hint
                 // ("manga"/"comic"/etc) when the api emits one in the
                 // categories array; otherwise leave the user to pick.
                 if selectedMediaTypeID == nil {
                     selectedMediaTypeID = guessMediaTypeID(for: lookup, types: types)
                 }
+            } catch {
+                mediaTypesError = error.localizedDescription
+                print("🔴 [Scan] media types failed for \(library.serverURL): \(error)")
             }
         } else if selectedMediaTypeID == nil,
                   let types = mediaTypesByServer[library.serverURL] {
             selectedMediaTypeID = guessMediaTypeID(for: lookup, types: types)
+        }
+
+        if formatsByServer[library.serverURL] == nil,
+           let terms = try? await VocabularyService(client: client).editionFormats(),
+           !terms.isEmpty {
+            formatsByServer[library.serverURL] = terms.sorted { $0.sortOrder < $1.sortOrder }
         }
 
         // Tags are per-library — always re-fetch on library change.
@@ -801,6 +833,103 @@ struct RedesignedScanResultView: View {
             parts.append(year)
         }
         return parts.joined(separator: " · ")
+    }
+
+    // MARK: - Where it already is
+
+    /// What every collection says about this barcode.
+    ///
+    /// Scanning is the one question that is not scoped to a collection: the
+    /// book is in your hand, and "do I already have this?" is not a question
+    /// about the shelf you happen to be looking at. The picker below is where
+    /// to *add* it; this is where it already is, which is usually the answer
+    /// somebody scanning in a shop actually wanted.
+    @ViewBuilder
+    private var ownershipCard: some View {
+        let held = libraries.filter { ownedMatch(for: $0) != nil }
+        let pending = libraries.contains { ownership[$0.clientKey] == nil }
+
+        if !held.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.good)
+                    Text(held.count == 1 ? "You have this" : "You have this in \(held.count) libraries")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText)
+                    Spacer()
+                    if pending {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                            .tint(Theme.Colors.appText3)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+                ForEach(Array(held.enumerated()), id: \.element.clientKey) { idx, library in
+                    heldRow(library)
+                    if idx != held.count - 1 {
+                        Divider().background(Theme.Colors.appLine).padding(.leading, 14)
+                    }
+                }
+            }
+            .background(Theme.Colors.good.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Theme.Colors.good.opacity(0.3), lineWidth: 0.5)
+            )
+            .padding(.horizontal, 22)
+            .padding(.bottom, 14)
+        }
+    }
+
+    @ViewBuilder
+    private func heldRow(_ library: Library) -> some View {
+        let match = ownedMatch(for: library)
+        Button {
+            guard let match else { return }
+            onOpenBook(library, match.bookId)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: library.serverURL.hasPrefix("local://") ? "iphone" : "server.rack")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.appText3)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(library.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.Colors.appText)
+                        .lineLimit(1)
+                    // The server, when there is more than one collection. With
+                    // one, saying it every time is noise.
+                    if appState.sources.count > 1, !library.serverName.isEmpty {
+                        Text(library.serverName)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.Colors.appText3)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 6)
+                if let match, match.copyCount > 1 {
+                    Text("\(match.copyCount) copies")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.Colors.appText3)
+                }
+                Text("Open")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.accent)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Theme.Colors.appText3)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Library section
@@ -955,9 +1084,10 @@ struct RedesignedScanResultView: View {
                 .foregroundStyle(Theme.Colors.appText3)
             Button { showMediaTypeSheet = true } label: {
                 HStack(spacing: 6) {
-                    Text(currentMediaTypeName ?? "Loading…")
+                    Text(currentMediaTypeName ?? mediaTypePlaceholder)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.Colors.appText)
+                        .foregroundStyle(currentMediaTypeName == nil
+                                         ? Theme.Colors.appText3 : Theme.Colors.appText)
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 10, weight: .bold))
@@ -977,6 +1107,14 @@ struct RedesignedScanResultView: View {
         }
     }
 
+    /// What the chip says when nothing is selected. Three different states hid
+    /// behind one word before: still fetching, fetched nothing, and failed.
+    private var mediaTypePlaceholder: String {
+        if mediaTypesError != nil { return "Unavailable — tap to retry" }
+        if currentMediaTypes.isEmpty { return "Loading…" }
+        return "Choose"
+    }
+
     private var currentMediaTypeName: String? {
         guard let id = selectedMediaTypeID else { return nil }
         return currentMediaTypes.first(where: { $0.id == id })?.displayName
@@ -990,9 +1128,10 @@ struct RedesignedScanResultView: View {
                 .tracking(1.2)
                 .foregroundStyle(Theme.Colors.appText3)
             HStack(spacing: 0) {
-                statusSegment(.unread,  icon: "circle",        label: "Unread")
-                statusSegment(.reading, icon: "book.fill",     label: "Reading")
-                statusSegment(.read,    icon: "checkmark",     label: "Read")
+                statusSegment(.unread,     icon: "circle",        label: "Unread")
+                statusSegment(.wantToRead, icon: "bookmark",     label: "Want")
+                statusSegment(.reading,    icon: "book.fill",     label: "Reading")
+                statusSegment(.read,       icon: "checkmark",     label: "Read")
             }
             .padding(2)
             .background(
@@ -1078,7 +1217,7 @@ struct RedesignedScanResultView: View {
     }
 
     private var moreSummary: String {
-        let formatLabel = formats.first(where: { $0.id == selectedFormat })?.label ?? selectedFormat
+        let formatLabel = EditionFormatLabels.label(selectedFormat)
         let tagBit = selectedTagIDs.isEmpty ? "no tags" : "\(selectedTagIDs.count) tag\(selectedTagIDs.count == 1 ? "" : "s")"
         return "\(formatLabel) · \(tagBit)"
     }
@@ -1089,10 +1228,13 @@ struct RedesignedScanResultView: View {
             Text("Format")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Theme.Colors.appText2)
-            HStack(spacing: 8) {
-                ForEach(formats, id: \.id) { f in
-                    chipButton(label: f.label, active: selectedFormat == f.id) {
-                        selectedFormat = f.id
+            // Wraps. Six formats do not fit across a phone in one row, and the
+            // hardcoded four did, which is why this was an HStack.
+            FlowRow(spacing: 8) {
+                ForEach(formats) { f in
+                    chipButton(label: EditionFormatLabels.label(f.code),
+                               active: selectedFormat == f.code) {
+                        selectedFormat = f.code
                     }
                 }
             }
@@ -1508,21 +1650,15 @@ struct RedesignedScanResultView: View {
 
         do {
             let book = try await BookService(client: client).create(libraryId: library.id, body: body)
-            // If the user picked Reading or Read, set status on the
-            // primary edition's interaction.
-            if selectedStatus != .unread,
-               let edition = (try? await BookService(client: client).editions(libraryId: library.id, bookId: book.id))?.first {
-                let upd = UpdateInteractionRequest(
-                    readStatus: selectedStatus.apiValue,
-                    rating: nil,
-                    notes: "",
-                    review: "",
-                    dateStarted: nil,
-                    dateFinished: nil,
-                    isFavorite: false
-                )
+            // Reading state belongs to the work, not to a printing. This
+            // wrote through the old per-edition route, which also meant a
+            // round trip to fetch an edition id purely to address something
+            // that is not keyed on editions any more: marking a scan as Read
+            // wrote where nothing reads from.
+            if selectedStatus != .unread {
                 _ = try? await BookService(client: client)
-                    .updateInteraction(libraryId: library.id, bookId: book.id, editionId: edition.id, body: upd)
+                    .updateMyBook(bookId: book.id,
+                                  body: UpdateMyBookRequest(readStatus: selectedStatus.apiValue))
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             addedSuccess = true
@@ -1632,10 +1768,18 @@ struct RedesignedScanResultView: View {
     /// Account to hit for ISBN lookups. Provider-based, so any remote
     /// server gives the same answer — but the preferred account wins if
     /// it's remote so multi-server users get consistent results.
+    /// Which server answers the ISBN.
+    ///
+    /// The collection the reader has open, when it is a server. Two servers can
+    /// return different metadata for the same barcode, so the answer should
+    /// come from the one whose shelf they are looking at rather than from
+    /// whichever account happens to sort first. Falls back to any reachable
+    /// server, then to Open Library directly, which is what a Lite-only install
+    /// has always used.
     private func lookupCapableAccount() -> ServerAccount? {
-        if let preferred = primaryAccount(),
-           preferred.kind == .remote, !preferred.needsReauth {
-            return preferred
+        if let active = appState.activeSource,
+           active.kind == .remote, !active.needsReauth {
+            return active
         }
         return appState.accounts.first { $0.kind == .remote && !$0.needsReauth }
     }

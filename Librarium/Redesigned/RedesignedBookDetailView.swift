@@ -58,6 +58,10 @@ struct RedesignedBookDetailView: View {
     /// for books no catalogue has heard of.
     @State private var wishEntry: WishlistEntry?
     @State private var wishBusy = false
+    /// Whether the wishlist answered at all. A failed check looked exactly like
+    /// "not on the wishlist", so the menu offered to add a book that was
+    /// already on it and adding again is a second row, not a no-op.
+    @State private var wishKnown = false
     @State private var activeLoan: Loan?
     @State private var coverCacheBuster: Int = 0
 
@@ -178,7 +182,7 @@ struct RedesignedBookDetailView: View {
         // Light up the Library tab on the floating bar regardless of
         // which tab the user navigated from (Search results, Home
         // strip, Library books grid, etc).
-        .preference(key: LogicalTabPreferenceKey.self, value: AppTab.library)
+        .preference(key: LogicalTabPreferenceKey.self, value: AppTab.books)
         .task { await loadDetail() }
         .sheet(isPresented: $showEdit) {
             if isLocalLibrary, let accountID = localAccountID {
@@ -330,7 +334,9 @@ struct RedesignedBookDetailView: View {
                             systemImage: wishEntry == nil ? "heart" : "heart.slash"
                         )
                     }
-                    .disabled(wishBusy)
+                    // Off until the wishlist has actually answered. Offering
+                    // "Add" on a guess is how a book ends up on it twice.
+                    .disabled(wishBusy || !wishKnown)
                 }
                 // Edit routes to whichever sheet can actually write:
                 // AddEditBookSheet saves through the api, LiteEditBookSheet
@@ -1314,8 +1320,14 @@ struct RedesignedBookDetailView: View {
     private func loadWish() async {
         guard !isLocalLibrary else { return }
         let client = appState.makeClient(serverURL: library.serverURL)
-        let entries = (try? await WishlistService(client: client).list()) ?? []
-        wishEntry = entries.first { $0.bookId == currentBook.id }
+        do {
+            let entries = try await WishlistService(client: client).list()
+            wishEntry = entries.first { $0.bookId == currentBook.id }
+            wishKnown = true
+        } catch {
+            // Left unknown rather than assumed absent.
+            wishKnown = false
+        }
     }
 
     /// The other end of the link, fetched without naming a library: a volume
