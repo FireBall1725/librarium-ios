@@ -574,6 +574,7 @@ struct RedesignedScanResultView: View {
                     topBar
                     coverHero
                     if lookup != nil {
+                        ownershipCard
                         librarySection
                         mediaAndStatusRow
                         moreOptionsSection
@@ -832,6 +833,103 @@ struct RedesignedScanResultView: View {
             parts.append(year)
         }
         return parts.joined(separator: " · ")
+    }
+
+    // MARK: - Where it already is
+
+    /// What every collection says about this barcode.
+    ///
+    /// Scanning is the one question that is not scoped to a collection: the
+    /// book is in your hand, and "do I already have this?" is not a question
+    /// about the shelf you happen to be looking at. The picker below is where
+    /// to *add* it; this is where it already is, which is usually the answer
+    /// somebody scanning in a shop actually wanted.
+    @ViewBuilder
+    private var ownershipCard: some View {
+        let held = libraries.filter { ownedMatch(for: $0) != nil }
+        let pending = libraries.contains { ownership[$0.clientKey] == nil }
+
+        if !held.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.good)
+                    Text(held.count == 1 ? "You have this" : "You have this in \(held.count) libraries")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText)
+                    Spacer()
+                    if pending {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                            .tint(Theme.Colors.appText3)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+                ForEach(Array(held.enumerated()), id: \.element.clientKey) { idx, library in
+                    heldRow(library)
+                    if idx != held.count - 1 {
+                        Divider().background(Theme.Colors.appLine).padding(.leading, 14)
+                    }
+                }
+            }
+            .background(Theme.Colors.good.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Theme.Colors.good.opacity(0.3), lineWidth: 0.5)
+            )
+            .padding(.horizontal, 22)
+            .padding(.bottom, 14)
+        }
+    }
+
+    @ViewBuilder
+    private func heldRow(_ library: Library) -> some View {
+        let match = ownedMatch(for: library)
+        Button {
+            guard let match else { return }
+            onOpenBook(library, match.bookId)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: library.serverURL.hasPrefix("local://") ? "iphone" : "server.rack")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.appText3)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(library.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.Colors.appText)
+                        .lineLimit(1)
+                    // The server, when there is more than one collection. With
+                    // one, saying it every time is noise.
+                    if appState.sources.count > 1, !library.serverName.isEmpty {
+                        Text(library.serverName)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.Colors.appText3)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 6)
+                if let match, match.copyCount > 1 {
+                    Text("\(match.copyCount) copies")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.Colors.appText3)
+                }
+                Text("Open")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.accent)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Theme.Colors.appText3)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Library section
@@ -1670,10 +1768,18 @@ struct RedesignedScanResultView: View {
     /// Account to hit for ISBN lookups. Provider-based, so any remote
     /// server gives the same answer — but the preferred account wins if
     /// it's remote so multi-server users get consistent results.
+    /// Which server answers the ISBN.
+    ///
+    /// The collection the reader has open, when it is a server. Two servers can
+    /// return different metadata for the same barcode, so the answer should
+    /// come from the one whose shelf they are looking at rather than from
+    /// whichever account happens to sort first. Falls back to any reachable
+    /// server, then to Open Library directly, which is what a Lite-only install
+    /// has always used.
     private func lookupCapableAccount() -> ServerAccount? {
-        if let preferred = primaryAccount(),
-           preferred.kind == .remote, !preferred.needsReauth {
-            return preferred
+        if let active = appState.activeSource,
+           active.kind == .remote, !active.needsReauth {
+            return active
         }
         return appState.accounts.first { $0.kind == .remote && !$0.needsReauth }
     }

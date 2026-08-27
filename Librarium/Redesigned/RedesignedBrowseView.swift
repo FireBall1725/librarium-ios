@@ -572,30 +572,41 @@ struct RedesignedBrowseView: View {
         guard let bookID = openBookID.wrappedValue else { return }
         openBookID.wrappedValue = nil
         Task {
-            await loadLibraries()
+            let known = await loadLibraries()
 
             // A Lite collection has no route to ask; the book is already on the
             // device, and the cache is keyed by the account's synthetic URL.
             if let source = appState.activeSource, !source.isServerBacked {
                 let cache = BookCache(modelContainer: modelContext.container)
-                for library in libraries.values {
+                for library in known.values {
                     if let book = cache.book(serverURL: source.url,
                                              libraryId: library.id, bookId: bookID) {
                         selected = BookOpenRequest(book: book, library: library)
                         return
                     }
                 }
+                vm.error = "That book is not in this collection."
                 return
             }
 
-            guard let library = libraries.values.first else { return }
+            guard let library = known.values.first else {
+                vm.error = "Could not reach this collection's libraries."
+                return
+            }
             let client = appState.makeClient(serverURL: library.serverURL)
             // By work, not per library: the scanner answers with a book, and
             // which of this collection's libraries holds it is the detail
             // page's problem rather than a reason to ask each one in turn.
-            if let book = try? await BookService(client: client).get(bookId: bookID) {
-                let owning = book.libraryId.isEmpty ? library : (libraries[book.libraryId] ?? library)
+            do {
+                let book = try await BookService(client: client).get(bookId: bookID)
+                let owning = book.libraryId.isEmpty ? library : (known[book.libraryId] ?? library)
                 selected = BookOpenRequest(book: book, library: owning)
+            } catch {
+                // Said out loud. Landing on the shelf with no book and no
+                // reason is the same picture as the feature not existing.
+                if !BrowseViewModel.isCancellation(error) {
+                    vm.error = error.localizedDescription
+                }
             }
         }
     }
@@ -647,7 +658,14 @@ struct RedesignedBrowseView: View {
 
     /// Every library on every account, so a book can be opened without another
     /// round trip and the library facet can be named before its counts arrive.
-    private func loadLibraries() async {
+    /// Returns the map as well as storing it.
+    ///
+    /// Writing `@State` and reading it back in the same closure sees the old
+    /// value: the write lands on the next render, not on the next line. That
+    /// silently emptied the saved views once already, and here it meant a
+    /// scanned book found no library to open in and gave up without a word.
+    @discardableResult
+    private func loadLibraries() async -> [String: Library] {
         var found: [String: Library] = [:]
         for account in [appState.activeSource].compactMap({ $0 }) where account.isServerBacked {
             let client = appState.makeClient(serverURL: account.url)
@@ -659,6 +677,7 @@ struct RedesignedBrowseView: View {
             }
         }
         if !found.isEmpty { libraries = found }
+        return found.isEmpty ? libraries : found
     }
 
     /// The detail view is built around a library, so opening from a grid that
