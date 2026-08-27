@@ -84,6 +84,21 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertEqual(query(a)["genre"], "Comedy,Drama,Horror")
     }
 
+    func testAContributorIsAskedForByIdAndCountsAsAFilter() {
+        // By id, not by name. Naming a person is a different question from
+        // searching for their name: "Tite" the person is not a book with Tite
+        // in its title.
+        var selection = BrowseSelection()
+        selection.contributors = ["c-1", "c-2"]
+        XCTAssertEqual(query(selection)["contributor"], "c-1,c-2")
+        // It counts, even though the sheet has no section for it. A grid
+        // narrowed to one author with no badge showing is a grid that looks
+        // broken.
+        XCTAssertEqual(selection.activeCount, 1)
+        selection.clear()
+        XCTAssertTrue(selection.contributors.isEmpty)
+    }
+
     func testAnEmptySearchIsNotASearch() {
         var selection = BrowseSelection()
         selection.query = "   "
