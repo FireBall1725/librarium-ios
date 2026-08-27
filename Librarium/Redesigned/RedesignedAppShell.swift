@@ -28,7 +28,6 @@ struct RedesignedAppShell: View {
     @Environment(AppState.self) private var appState
 
     @State private var selectedTab: AppTab = .home
-    @State private var selectedLibrary: Library?
     @State private var showScan = false
     /// Book the books grid should push once it appears. Set when the
     /// scanner finds the book already on a shelf and the user asks to
@@ -49,17 +48,20 @@ struct RedesignedAppShell: View {
                     .opacity(selectedTab == .home ? 1 : 0)
                     .allowsHitTesting(selectedTab == .home)
 
-                // The books surface, not a search box. Search is one filter
-                // among eleven here, the same way `q` is one parameter among
-                // several on `/me/books`; the cross-entity search this tab used
-                // to be is behind the magnifying glass in its header.
-                RedesignedBrowseView()
-                    .opacity(selectedTab == .books ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .books)
+                RedesignedSearchView()
+                    .opacity(selectedTab == .search ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .search)
 
-                libraryTab
-                    .opacity(selectedTab == .library ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .library)
+                // The collection, with library as one filter among eleven
+                // rather than the way in. The per-library screens are still
+                // here, one level down from this tab's overflow, because that
+                // is where syncing a library offline and adding to it live.
+                RedesignedBrowseView(
+                    openBookID: $pendingOpenBookID,
+                    isActive: selectedTab == .books
+                )
+                .opacity(selectedTab == .books ? 1 : 0)
+                .allowsHitTesting(selectedTab == .books)
 
                 RedesignedSeriesListView()
                     .opacity(selectedTab == .series ? 1 : 0)
@@ -88,40 +90,16 @@ struct RedesignedAppShell: View {
         .fullScreenCover(isPresented: $showScan) {
             RedesignedScanFlow(
                 onClose: { showScan = false },
-                onOpenBook: { library, bookID in
-                    // Close the scanner, land on the book's library, and
-                    // let the books grid push the detail once it has the
-                    // book loaded.
+                onOpenBook: { _, bookID in
+                    // Close the scanner and let the books grid push the detail
+                    // once it has the book. The library it came from is no
+                    // longer needed: the grid can fetch a book by work and the
+                    // scanner's answer is a book, not a shelf.
                     showScan = false
-                    selectedLibrary = library
                     pendingOpenBookID = bookID
-                    selectedTab = .library
+                    selectedTab = .books
                 }
             )
-        }
-    }
-
-    @ViewBuilder
-    private var libraryTab: some View {
-        if let library = selectedLibrary {
-            // Wrap in NavigationStack so RedesignedBooksView's
-            // `.navigationDestination` (book detail) has somewhere to
-            // push. Pass `\.libraryBack` so the header chevron in the
-            // books grid pops back to the library list.
-            NavigationStack {
-                RedesignedBooksView(library: library, openBookID: $pendingOpenBookID)
-                    .environment(\.libraryBack, { selectedLibrary = nil })
-                    // Tabs are kept alive in the ZStack above, so this
-                    // view survives a library change and would otherwise
-                    // keep the previous library's @State: its loaded
-                    // books, and a .task that never runs again. Keying
-                    // on the library forces a fresh view per library.
-                    .id(library.clientKey)
-            }
-        } else {
-            RedesignedLibrariesView { lib in
-                selectedLibrary = lib
-            }
         }
     }
 
@@ -130,7 +108,7 @@ struct RedesignedAppShell: View {
 // MARK: - Tab identity
 
 enum AppTab: Hashable {
-    case home, books, library, series
+    case home, search, books, series
 }
 
 /// Detail views advertise the tab they "logically belong to" via this
@@ -169,9 +147,9 @@ private struct EditorialTabBar: View {
     var body: some View {
         HStack(spacing: 0) {
             tab(.home,    icon: "house.fill",          label: "Home")
-            tab(.books,   icon: "books.vertical",       label: "Books")
+            tab(.search,  icon: "magnifyingglass",      label: "Search")
             scanFAB
-            tab(.library, icon: "building.columns.fill", label: "Libraries")
+            tab(.books,   icon: "books.vertical.fill",  label: "Books")
             tab(.series,  icon: "list.number",         label: "Series")
         }
         .padding(.horizontal, 12)

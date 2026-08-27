@@ -20,6 +20,17 @@ struct RedesignedBrowseView: View {
     var initialSelection: BrowseSelection?
     /// What to call the scope when it did not come from the library facet.
     var initialTitle: String?
+    /// Set by the shell when the scanner finds a book already on a shelf and
+    /// the reader asks to open it. Cleared once pushed, so backing out of the
+    /// detail does not immediately push it again.
+    var openBookID: Binding<String?> = .constant(nil)
+    /// Whether this tab is the one on screen.
+    ///
+    /// The shell keeps every tab alive behind an opacity, so a plain `.task`
+    /// fires for all four at launch: four screens' worth of requests for the
+    /// one the reader is looking at, and any of them can be cancelled by the
+    /// next re-render with nothing to try again.
+    var isActive = true
 
     @Environment(AppState.self) private var appState
 
@@ -86,16 +97,19 @@ struct RedesignedBrowseView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(isRoot ? .hidden : .visible, for: .navigationBar)
-            .task {
-                guard vm.books.isEmpty else { return }
+            // Keyed on being on screen, so the first visit loads and a visit
+            // after a cancelled attempt tries again instead of leaving an empty
+            // shelf up for the rest of the session.
+            .task(id: isActive) {
+                guard isActive, !vm.hasLoaded else { return }
                 if let initialSelection {
                     vm.selection = initialSelection
                 } else {
-                    await loadViews()
-                    // Open on the reader's default view when they have one, the
-                    // same as the web sidebar does. A saved default nobody
-                    // honours is a preference that does nothing.
-                    if let fallback = views.first(where: { $0.isDefault }) {
+                    // Returned rather than read back off `@State`: a write and
+                    // a read in the same closure sees the old value, so the
+                    // default view was never being applied.
+                    let loaded = await loadViews()
+                    if let fallback = loaded.first(where: { $0.isDefault }) {
                         vm.selection = BrowseSelection(query: fallback.filterQuery)
                     }
                 }
@@ -118,6 +132,7 @@ struct RedesignedBrowseView: View {
                 }
             }
             .onChange(of: vm.sort) { _, _ in reload() }
+            .onChange(of: openBookID.wrappedValue) { _, _ in pushScannedBook() }
             .sheet(isPresented: $showFilters) {
                 BrowseFilterSheet(
                     selection: $vm.selection, facets: vm.facets,
@@ -237,6 +252,13 @@ struct RedesignedBrowseView: View {
             }
             NavigationLink { RedesignedSuggestionsView() } label: {
                 Label("Suggestions", systemImage: "sparkles")
+            }
+            Divider()
+            // One level down rather than a tab of its own. Syncing a library
+            // offline and adding to it are things you do to a library, which is
+            // rarer than asking a question about the whole collection.
+            NavigationLink { LibrariesBrowser() } label: {
+                Label("Libraries", systemImage: "building.columns")
             }
             Button { showSearch = true } label: {
                 Label("Search everything", systemImage: "magnifyingglass")
@@ -385,6 +407,26 @@ struct RedesignedBrowseView: View {
         Task { await vm.load(appState: appState) }
     }
 
+    /// Opens the book the scanner just found.
+    ///
+    /// Fetched by work rather than looked up in the grid: the scanner answers
+    /// with a book, and waiting for that book to turn up on whatever page of
+    /// whatever filter is currently applied would mean it usually never does.
+    private func pushScannedBook() {
+        guard let bookID = openBookID.wrappedValue else { return }
+        openBookID.wrappedValue = nil
+        Task {
+            await loadLibraries()
+            for library in libraries.values {
+                let client = appState.makeClient(serverURL: library.serverURL)
+                if let book = try? await BookService(client: client).get(bookId: bookID) {
+                    selected = BookOpenRequest(book: book, library: library)
+                    return
+                }
+            }
+        }
+    }
+
     /// The saved view matching what is on screen, if one does. Compared on the
     /// query string rather than by remembering which chip was tapped, so
     /// changing one filter after opening a view unticks it honestly.
@@ -401,9 +443,12 @@ struct RedesignedBrowseView: View {
     /// Views live on one server. With several accounts the primary one is
     /// where a new view goes, matching every other global preference in the
     /// app rather than inventing a picker for it.
-    private func loadViews() async {
+    @discardableResult
+    private func loadViews() async -> [SavedList] {
         let client = appState.makePrimaryClient()
-        views = (try? await ListService(client: client).savedViews(surface: "books")) ?? []
+        let loaded = (try? await ListService(client: client).savedViews(surface: "books")) ?? []
+        views = loaded
+        return loaded
     }
 
     private func saveView() {

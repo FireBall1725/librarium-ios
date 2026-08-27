@@ -38,6 +38,11 @@ final class BrowseViewModel {
 
     // MARK: - Loading
 
+    /// True once a load has finished with something to show. A cancelled
+    /// attempt does not count: the whole point is that the next chance to run
+    /// tries again rather than leaving an empty shelf on screen forever.
+    private(set) var hasLoaded = false
+
     func load(appState: AppState) async {
         isLoading = true
         error = nil
@@ -49,6 +54,7 @@ final class BrowseViewModel {
             books = []
             total = 0
             facets = BookFacets()
+            hasLoaded = true
             return
         }
 
@@ -60,11 +66,13 @@ final class BrowseViewModel {
                                           sort: sort, perPage: perPage)
         async let counted = Self.fetchFacets(targets: targets, selection: selection)
 
-        let (rows, count, origins) = await listed
+        let (rows, count, origins, failure) = await listed
         books = rows
         total = count
         serverURL = origins
+        error = failure
         facets = await counted
+        hasLoaded = failure == nil && !Task.isCancelled
     }
 
     func loadMore(appState: AppState) async {
@@ -73,7 +81,7 @@ final class BrowseViewModel {
         defer { isLoadingMore = false }
 
         let next = page + 1
-        let (rows, count, origins) = await Self.fetchPage(
+        let (rows, count, origins, _) = await Self.fetchPage(
             next, targets: Self.targets(appState), selection: selection,
             sort: sort, perPage: perPage)
         guard !rows.isEmpty else { return }
@@ -111,27 +119,52 @@ final class BrowseViewModel {
             .map { Target(url: $0.url, client: appState.makeClient(serverURL: $0.url)) }
     }
 
+    /// What one account answered, or why it did not.
+    private struct PageResult: @unchecked Sendable {
+        let url: String
+        let paged: Paged<Book>?
+        let failure: String?
+    }
+
     private static func fetchPage(
         _ page: Int, targets: [Target], selection: BrowseSelection,
         sort: BookSortOption, perPage: Int
-    ) async -> ([Book], Int, [String: String]) {
+    ) async -> ([Book], Int, [String: String], String?) {
         var rows: [Book] = []
         var total = 0
         var origins: [String: String] = [:]
+        var failures: [String] = []
 
-        await withTaskGroup(of: (String, Paged<Book>?).self) { group in
+        await withTaskGroup(of: PageResult.self) { group in
             for target in targets {
                 group.addTask {
-                    let paged = try? await MeBrowseService(client: target.client).books(
-                        selection: selection, sort: sort, page: page, perPage: perPage)
-                    return (target.url, paged)
+                    do {
+                        let paged = try await MeBrowseService(client: target.client).books(
+                            selection: selection, sort: sort, page: page, perPage: perPage)
+                        return PageResult(url: target.url, paged: paged, failure: nil)
+                    } catch {
+                        // Kept rather than swallowed. Every failure here used to
+                        // render as an empty shelf, which is the same picture a
+                        // new account gives and says nothing about what broke.
+                        //
+                        // Except cancellation, which is not a failure: a view
+                        // that goes away mid-request cancels it, and reporting
+                        // that puts "cancelled" in front of someone who did
+                        // nothing but switch tabs.
+                        return PageResult(url: target.url, paged: nil,
+                                          failure: isCancellation(error)
+                                              ? nil : error.localizedDescription)
+                    }
                 }
             }
-            for await (url, paged) in group {
-                guard let paged else { continue }
+            for await result in group {
+                guard let paged = result.paged else {
+                    if let failure = result.failure { failures.append(failure) }
+                    continue
+                }
                 total += paged.total
                 for book in paged.items {
-                    origins[book.id] = url
+                    origins[book.id] = result.url
                     rows.append(book)
                 }
             }
@@ -144,7 +177,11 @@ final class BrowseViewModel {
         if targets.count > 1 {
             rows = merge(rows, by: sort)
         }
-        return (rows, total, origins)
+        // Only when nothing came back. One server of two being unreachable is
+        // a partial answer, not an error worth an alert over the half that
+        // loaded.
+        let failure = rows.isEmpty ? failures.first : nil
+        return (rows, total, origins, failure)
     }
 
     private static func fetchFacets(targets: [Target], selection: BrowseSelection) async -> BookFacets {
@@ -164,6 +201,20 @@ final class BrowseViewModel {
     }
 
     // MARK: - Helpers
+
+    /// Whether an error is the request being called off rather than failing.
+    ///
+    /// URLSession reports it as `NSURLErrorCancelled`, which localises to the
+    /// single word "cancelled" and reads, to anyone who sees it, like the app
+    /// giving up for no reason.
+    nonisolated static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let underlying: Error
+        if case let APIError.networkError(inner) = error { underlying = inner } else { underlying = error }
+        if underlying is CancellationError { return true }
+        let ns = underlying as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
+    }
 
     /// Interleaves two servers' pages on the key the reader asked to sort by.
     ///

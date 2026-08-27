@@ -124,6 +124,27 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertEqual(merged.library.count, 2)
     }
 
+    // MARK: - Cancellation
+
+    func testACancelledRequestIsNotAFailure() {
+        // A view that goes away mid-request cancels it. Reporting that puts the
+        // word "cancelled" in front of someone who did nothing but switch tabs,
+        // and it also marks the load as having failed so nothing tries again.
+        let urlCancel = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+        XCTAssertTrue(BrowseViewModel.isCancellation(urlCancel))
+        XCTAssertTrue(BrowseViewModel.isCancellation(CancellationError()))
+        // Wrapped by the client, which is how it actually arrives.
+        XCTAssertTrue(BrowseViewModel.isCancellation(APIError.networkError(urlCancel)))
+    }
+
+    func testARealNetworkFailureStillCounts() {
+        // The guard has to be narrow. Treating every network error as a cancel
+        // brings back the silent empty shelf this was meant to end.
+        let offline = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+        XCTAssertFalse(BrowseViewModel.isCancellation(offline))
+        XCTAssertFalse(BrowseViewModel.isCancellation(APIError.unauthorized))
+    }
+
     // MARK: - Merging two servers
 
     private func book(title: String, created: String, year: Int?) throws -> Book {
