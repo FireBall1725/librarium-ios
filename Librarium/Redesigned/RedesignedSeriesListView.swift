@@ -17,10 +17,46 @@ struct RedesignedSeriesListView: View {
     @Environment(\.modelContext) private var modelContext
 
     @State private var vm = RedesignedSeriesListViewModel()
-    @State private var searchText = ""
     @State private var selectedSeries: SeriesListEntry?
+    @State private var showFilters = false
+    @State private var showViews = false
+    @State private var searchTask: Task<Void, Never>?
+    @State private var views: [SavedList] = []
+    @State private var showSaveView = false
+    @State private var newViewName = ""
+    @State private var viewsError: String?
 
     var body: some View {
+        ZStack {
+            page
+            SideDrawer(edge: .leading, isOpen: $showViews) {
+                SavedViewsPanel(
+                    views: views,
+                    activeID: activeViewID,
+                    canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
+                    onOpen: { open($0); showViews = false },
+                    onSave: {
+                        newViewName = ""
+                        showViews = false
+                        showSaveView = true
+                    },
+                    onDelete: { deleteView($0) },
+                    onClose: { showViews = false },
+                    error: viewsError
+                )
+            }
+            SideDrawer(edge: .trailing, isOpen: $showFilters) {
+                SeriesFilterPanel(
+                    selection: $vm.selection, facets: vm.facets,
+                    onChange: { reload() },
+                    onClose: { showFilters = false }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var page: some View {
         NavigationStack {
             ZStack {
                 Theme.Colors.appBackground.ignoresSafeArea()
@@ -29,6 +65,11 @@ struct RedesignedSeriesListView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         header
                         searchPill
+                        SeriesFilterPills(
+                            selection: $vm.selection, facets: vm.facets,
+                            onChange: { reload() }
+                        )
+                        .padding(.bottom, 12)
                         listContent
                     }
                     .padding(.bottom, 40)
@@ -36,7 +77,13 @@ struct RedesignedSeriesListView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(.hidden, for: .navigationBar)
+            .drawerEdges(leading: $showViews, trailing: $showFilters,
+                         enabled: !showViews && !showFilters)
             .task(id: appState.accounts.map(\.id)) {
+                let loaded = await loadViews()
+                if let fallback = loaded.first(where: { $0.isDefault }), vm.entries.isEmpty {
+                    vm.selection = SeriesSelection(query: fallback.filterQuery)
+                }
                 await vm.load(appState: appState, modelContainer: modelContext.container)
             }
             .refreshable {
@@ -45,6 +92,18 @@ struct RedesignedSeriesListView: View {
             .navigationDestination(item: $selectedSeries) { entry in
                 RedesignedSeriesDetailView(library: entry.library, series: entry.series)
             }
+            .sheet(isPresented: $showSaveView) {
+                SaveViewSheet(name: $newViewName) { saveView() }
+            }
+            .onChange(of: vm.selection.query) { _, _ in
+                searchTask?.cancel()
+                searchTask = Task {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    await vm.load(appState: appState, modelContainer: modelContext.container)
+                }
+            }
+            .onChange(of: vm.sort) { _, _ in reload() }
         }
     }
 
@@ -58,16 +117,21 @@ struct RedesignedSeriesListView: View {
                 .tracking(1.0)
                 .textCase(.uppercase)
                 .foregroundStyle(Theme.Colors.appText3)
-            HStack(alignment: .firstTextBaseline) {
-                Text("Series")
-                    .font(Theme.Fonts.pageTitle)
-                    .foregroundStyle(Theme.Colors.appText)
-                Spacer()
-                if !vm.entries.isEmpty {
-                    Text(vm.entries.count == 1 ? "1 series" : "\(vm.entries.count) series")
-                        .font(Theme.Fonts.ui(13, weight: .medium))
-                        .foregroundStyle(Theme.Colors.appText3)
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Series")
+                        .font(Theme.Fonts.pageTitle)
+                        .foregroundStyle(Theme.Colors.appText)
+                    if !vm.entries.isEmpty {
+                        Text(runSummary)
+                            .font(Theme.Fonts.ui(13, weight: .medium))
+                            .foregroundStyle(Theme.Colors.appText3)
+                    }
                 }
+                Spacer()
+                viewsButton
+                sortMenu
+                filterButton
             }
         }
         .padding(.horizontal, 22)
@@ -83,14 +147,14 @@ struct RedesignedSeriesListView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Theme.Colors.appText3)
-            TextField("Filter series", text: $searchText)
+            TextField("Search series", text: $vm.selection.query)
                 .font(Theme.Fonts.ui(14, weight: .medium))
                 .foregroundStyle(Theme.Colors.appText)
                 .tint(Theme.Colors.accent)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-            if !searchText.isEmpty {
-                Button { searchText = "" } label: {
+            if !vm.selection.query.isEmpty {
+                Button { vm.selection.query = "" } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 14))
                         .foregroundStyle(Theme.Colors.appText3)
@@ -107,9 +171,142 @@ struct RedesignedSeriesListView: View {
 
     // MARK: - List
 
+    /// How many runs, and how many volumes are missing across them. The second
+    /// number is the reason to open this surface at all, so it belongs in the
+    /// header rather than only inside each row.
+    private var runSummary: String {
+        let runs = vm.entries.count
+        let missing = vm.entries.compactMap { $0.series.missingCount }.reduce(0, +)
+        let base = runs == 1 ? "1 series" : "\(runs) series"
+        return missing > 0 ? "\(base) · \(missing) missing" : base
+    }
+
+    private func reload() {
+        searchTask?.cancel()
+        Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
+    }
+
+    /// Matched on the query string rather than on which chip was tapped, so
+    /// changing a filter after opening a view unticks it honestly.
+    private var activeViewID: String? {
+        let current = vm.selection.queryString()
+        return views.first(where: { $0.filterQuery == current })?.id
+    }
+
+    private func open(_ view: SavedList) {
+        vm.selection = SeriesSelection(query: view.filterQuery)
+        reload()
+    }
+
+    @discardableResult
+    private func loadViews() async -> [SavedList] {
+        guard let client = appState.makeServerClient() else {
+            viewsError = nil
+            return []
+        }
+        do {
+            let loaded = try await ListService(client: client).savedViews(surface: "series")
+            views = loaded
+            viewsError = nil
+            return loaded
+        } catch {
+            viewsError = BrowseViewModel.isCancellation(error)
+                ? nil : error.localizedDescription
+            return views
+        }
+    }
+
+    private func saveView() {
+        let name = newViewName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let query = vm.selection.queryString()
+        Task {
+            guard let client = appState.makeServerClient() else { return }
+            try? await ListService(client: client)
+                .saveView(name: name, surface: "series", query: query)
+            await loadViews()
+        }
+    }
+
+    @ViewBuilder
+    private var sortMenu: some View {
+        Menu {
+            ForEach(SeriesSortOption.allCases) { option in
+                Button {
+                    vm.sort = option
+                } label: {
+                    if vm.sort == option {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Text(option.label)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText2)
+                .frame(width: 38, height: 38)
+                .background(Color.white.opacity(0.06), in: Circle())
+                .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
+        }
+        .accessibilityLabel("Sort")
+    }
+
+    @ViewBuilder
+    private var viewsButton: some View {
+        Button { showViews = true } label: {
+            Image(systemName: "sidebar.leading")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(activeViewID == nil ? Theme.Colors.appText2 : Theme.Colors.accentStrong)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(activeViewID == nil
+                                          ? Color.white.opacity(0.06) : Theme.Colors.accentSoft))
+                .overlay(Circle().stroke(activeViewID == nil
+                                         ? Theme.Colors.appLine : Color.clear, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Views")
+    }
+
+    private func deleteView(_ view: SavedList) {
+        Task {
+            guard let client = appState.makeServerClient() else { return }
+            try? await ListService(client: client).deleteView(id: view.id)
+            await loadViews()
+        }
+    }
+
+    @ViewBuilder
+    private var filterButton: some View {
+        let n = vm.selection.activeCount
+        Button { showFilters = true } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(n > 0 ? Theme.Colors.accentStrong : Theme.Colors.appText2)
+                    .frame(width: 38, height: 38)
+                    .background(
+                        Circle().fill(n > 0 ? Theme.Colors.accentSoft : Color.white.opacity(0.06))
+                    )
+                    .overlay(Circle().stroke(n > 0 ? Color.clear : Theme.Colors.appLine, lineWidth: 0.5))
+                if n > 0 {
+                    Text("\(n)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.Colors.appBackground)
+                        .frame(width: 16, height: 16)
+                        .background(Circle().fill(Theme.Colors.accentStrong))
+                        .offset(x: 2, y: -2)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(n > 0 ? "Filter, \(n) applied" : "Filter")
+    }
+
     @ViewBuilder
     private var listContent: some View {
-        let filtered = filteredEntries
+        let filtered = vm.entries
         if vm.isLoading && vm.entries.isEmpty {
             ProgressView()
                 .frame(maxWidth: .infinity, minHeight: 240)
@@ -121,7 +318,7 @@ struct RedesignedSeriesListView: View {
                 Text("No matches")
                     .font(Theme.Fonts.cardTitle)
                     .foregroundStyle(Theme.Colors.appText)
-                Text("Try a different search.")
+                Text("Try a different search or clear the filters.")
                     .font(Theme.Fonts.ui(13, weight: .medium))
                     .foregroundStyle(Theme.Colors.appText3)
             }
@@ -139,12 +336,6 @@ struct RedesignedSeriesListView: View {
                 }
             }
         }
-    }
-
-    private var filteredEntries: [SeriesListEntry] {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return vm.entries }
-        return vm.entries.filter { $0.series.name.lowercased().contains(q) }
     }
 
     @ViewBuilder
@@ -227,6 +418,14 @@ struct RedesignedSeriesListView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Theme.Colors.appText3)
                     .lineLimit(1)
+                if let missing = entry.series.missingCount, missing > 0 {
+                    // The number people open this page for. A run reads
+                    // "6 of 7" everywhere else on the row; this says what to do
+                    // about the difference.
+                    Text(missing == 1 ? "1 missing" : "\(missing) missing")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.Colors.warn)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -240,12 +439,23 @@ struct RedesignedSeriesListView: View {
     }
 
     private func subtitle(for entry: SeriesListEntry) -> String {
-        let count = entry.series.totalCount ?? entry.series.bookCount
-        let unit = count == 1 ? "vol" : "vols"
-        let status = entry.series.isComplete
-            ? "complete"
-            : (entry.series.status.isEmpty ? "ongoing" : entry.series.status)
-        var parts = ["\(count) \(unit) · \(status)"]
+        let series = entry.series
+        // "6 of 7" rather than "7 vols". The run's length is what a publisher
+        // decided; how much of it is on the shelf is what the reader owns, and
+        // printing only the first made a complete run and a barely-started one
+        // read identically.
+        let held: String
+        if let total = series.totalCount, total > 0 {
+            held = "\(series.bookCount) of \(total) vols"
+        } else {
+            held = series.bookCount == 1 ? "1 vol" : "\(series.bookCount) vols"
+        }
+        var parts = [held, SeriesFacetLabels.status(series.status.isEmpty ? "ongoing" : series.status).lowercased()]
+        if let stars = series.ratingStars {
+            parts.append(stars == stars.rounded()
+                ? "★ \(Int(stars))"
+                : String(format: "★ %.1f", stars))
+        }
         if vm.showLibraryBadge, !entry.library.name.isEmpty {
             parts.append(entry.library.name)
         }
@@ -260,6 +470,7 @@ struct RedesignedSeriesListView: View {
 private struct PerAccountSeries {
     let libraryCount: Int
     let entries: [SeriesListEntry]
+    var facets = SeriesFacets()
 }
 
 struct SeriesListEntry: Identifiable, Hashable {
@@ -284,6 +495,9 @@ struct SeriesListEntry: Identifiable, Hashable {
 @Observable
 final class RedesignedSeriesListViewModel {
     var entries: [SeriesListEntry] = []
+    var facets = SeriesFacets()
+    var selection = SeriesSelection()
+    var sort: SeriesSortOption = .name
     var isLoading = true
     /// True when the user has more than one library on the primary
     /// account — otherwise the per-row library badge is redundant.
@@ -301,7 +515,9 @@ final class RedesignedSeriesListViewModel {
         // `needsReauth` — the user can't re-auth while offline, but
         // their cached series should still be browsable. Auth state
         // is only relevant for the online path below.
-        let allRemote = appState.accounts.filter { $0.kind == .remote }
+        // One collection. A run belongs to a server, and two servers' runs
+        // listed together cannot share a filter, a sort or a saved view.
+        let allRemote = [appState.activeSource].compactMap { $0 }.filter { $0.kind == .remote }
         let offline = allRemote.allSatisfy { NetworkMonitor.shared.shouldSkipAPI(for: $0.url) }
         if !allRemote.isEmpty, offline {
             await loadOffline(remotes: allRemote, modelContainer: modelContainer)
@@ -317,7 +533,10 @@ final class RedesignedSeriesListViewModel {
 
         var collected: [SeriesListEntry] = []
         var totalLibCount = 0
+        var counts = SeriesFacets()
         let cache = SeriesCache(modelContainer: modelContainer)
+        let selection = self.selection
+        let sort = self.sort
 
         await withTaskGroup(of: PerAccountSeries.self) { group in
             for account in remotes {
@@ -348,36 +567,60 @@ final class RedesignedSeriesListViewModel {
                         )
                         return PerAccountSeries(libraryCount: cached.libraryCount, entries: cached.entries)
                     }
+                    // One request for the whole account. This used to ask
+                    // `/libraries/{id}/series` once per library, so the request
+                    // count grew with the collection and none of the answers
+                    // carried a count: no volumes held, no volumes missing, no
+                    // rating, and no facets to narrow by.
+                    let byID = Dictionary(uniqueKeysWithValues: libs.map { ($0.id, $0) })
+                    let page = try? await MeBrowseService(client: client)
+                        .series(selection: selection, sort: sort)
+                    let list = page?.items ?? []
+
                     var slice: [SeriesListEntry] = []
-                    await withTaskGroup(of: (Library, [Series]).self) { inner in
-                        for lib in libs {
-                            inner.addTask {
-                                let s = (try? await SeriesService(client: client).list(libraryId: lib.id)) ?? []
-                                return (lib, s)
-                            }
-                        }
-                        for await (lib, list) in inner {
-                            slice.append(contentsOf: list.map { SeriesListEntry(series: $0, library: lib) })
-                            // Write through to the cache so offline visits
-                            // to the Series tab don't need a prior visit to
-                            // BooksView to populate. Best-effort — failure
-                            // just means the offline tab stays empty.
-                            cache.upsert(list, for: lib, serverAccountID: accountID)
-                        }
+                    for series in list {
+                        // A run whose library the caller only reaches through a
+                        // shared list arrives without one. Falling back to any
+                        // library on the same server keeps its covers pointed
+                        // at the right host rather than dropping the row.
+                        guard let lib = byID[series.libraryId] ?? libs.first else { continue }
+                        slice.append(SeriesListEntry(series: series, library: lib))
                     }
-                    return PerAccountSeries(libraryCount: libs.count, entries: slice)
+
+                    // Write through per library, which is how the offline cache
+                    // is keyed. Best-effort: failure just means the offline tab
+                    // stays empty until the next online visit.
+                    for (libID, group) in Dictionary(grouping: list, by: { $0.libraryId }) {
+                        guard let lib = byID[libID] else { continue }
+                        cache.upsert(group, for: lib, serverAccountID: accountID)
+                    }
+
+                    return PerAccountSeries(libraryCount: libs.count, entries: slice,
+                                            facets: page?.facets ?? SeriesFacets())
                 }
             }
             for await chunk in group {
                 totalLibCount += chunk.libraryCount
                 collected.append(contentsOf: chunk.entries)
+                counts = counts.merged(with: chunk.facets)
             }
         }
 
         showLibraryBadge = totalLibCount > 1
-        entries = collected.sorted {
-            $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending
+        facets = counts
+        // Runs with volumes nobody has. Derived from the counts already on
+        // every row rather than asked for, because the server has no facet for
+        // it and the subtraction is the same either way.
+        if selection.incompleteOnly {
+            collected = collected.filter { ($0.series.missingCount ?? 0) > 0 }
         }
+        // Name order is the server's when there is one account, and a merge
+        // when there are two, because no server can order across them.
+        entries = sort == .name
+            ? collected.sorted {
+                $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending
+            }
+            : collected
     }
 
     /// Offline path. Reads every cached `Series` row for each remote
@@ -498,6 +741,11 @@ struct SeriesMosaic: View {
             }
         }
         .frame(width: width, height: height)
+        // Nothing on the shelf, so nothing in colour. A run that exists only as
+        // volumes nobody has drew a full-strength mosaic from its covers and
+        // read exactly like one the reader owns.
+        .saturation(series.bookCount == 0 ? 0 : 1)
+        .opacity(series.bookCount == 0 ? 0.55 : 1)
         .background(Theme.Colors.appLine)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .shadow(color: .black.opacity(0.4), radius: 4, y: 2)

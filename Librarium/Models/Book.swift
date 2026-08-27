@@ -52,6 +52,10 @@ struct Book: Codable, Identifiable, Hashable {
     /// other path and the grid falls back to drawing an ordinary book.
     let ownership: String?
 
+    /// The year the work came out. Sent by the cross-library list and used when
+    /// two accounts' pages have to be interleaved on release order.
+    let publishYear: Int?
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id           = try c.decode(String.self,   forKey: .id)
@@ -74,6 +78,7 @@ struct Book: Codable, Identifiable, Hashable {
         userProgressPct  = try c.decodeIfPresent(Double.self, forKey: .userProgressPct)
         activeLoanCount  = try c.decodeIfPresent(Int.self,    forKey: .activeLoanCount)
         ownership        = try c.decodeIfPresent(String.self, forKey: .ownership)
+        publishYear      = try c.decodeIfPresent(Int.self,    forKey: .publishYear)
     }
 }
 

@@ -38,6 +38,15 @@ struct BookService {
         try await client.get("/api/v1/libraries/\(libraryId)/books/\(bookId)")
     }
 
+    /// A book without naming a library.
+    ///
+    /// A volume nobody holds belongs to no library, so the per-library route
+    /// answers 404 for exactly the books a series page needs in order to show
+    /// what is missing.
+    func get(bookId: String) async throws -> Book {
+        try await client.get("/api/v1/books/\(bookId)")
+    }
+
     func letters(libraryId: String) async throws -> [String] {
         try await client.get("/api/v1/libraries/\(libraryId)/books/letters")
     }

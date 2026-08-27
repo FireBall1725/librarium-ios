@@ -359,6 +359,7 @@ final class RedesignedHomeViewModel {
 
 struct RedesignedHomeView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.switchSource) private var switchSource
     @Environment(\.modelContext) private var modelContext
 
     @State private var vm = RedesignedHomeViewModel()
@@ -448,11 +449,7 @@ struct RedesignedHomeView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(dateEyebrow)
-                    .font(Theme.Fonts.ui(12, weight: .medium))
-                    .tracking(1.0)
-                    .textCase(.uppercase)
-                    .foregroundStyle(Theme.Colors.appText3)
+                sourceEyebrow
                 greetingLockup
             }
             Spacer()
@@ -470,6 +467,40 @@ struct RedesignedHomeView: View {
         .padding(.horizontal, 22)
         .padding(.top, 12)
         .padding(.bottom, 14)
+    }
+
+    /// The open collection, in the eyebrow, tappable to change it.
+    ///
+    /// Which shelf you are looking at is not a setting buried in a profile
+    /// sheet: with two servers connected, every number on this page means
+    /// something different depending on the answer, so the answer belongs where
+    /// the numbers are.
+    @ViewBuilder
+    private var sourceEyebrow: some View {
+        if appState.sources.count > 1, let source = appState.activeSource, let switchSource {
+            Button(action: switchSource) {
+                HStack(spacing: 5) {
+                    Image(systemName: source.isServerBacked ? "server.rack" : "iphone")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(source.name)
+                        .font(Theme.Fonts.ui(12, weight: .medium))
+                        .tracking(1.0)
+                        .textCase(.uppercase)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                }
+                .foregroundStyle(Theme.Colors.appText3)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Collection: \(source.name). Tap to change.")
+        } else {
+            Text(dateEyebrow)
+                .font(Theme.Fonts.ui(12, weight: .medium))
+                .tracking(1.0)
+                .textCase(.uppercase)
+                .foregroundStyle(Theme.Colors.appText3)
+        }
     }
 
     @ViewBuilder

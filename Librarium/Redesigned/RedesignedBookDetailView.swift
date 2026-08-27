@@ -47,6 +47,21 @@ struct RedesignedBookDetailView: View {
     /// copies, which is why the section is hidden rather than shown as none.
     @State private var copies: [Copy] = []
     @State private var seriesRefs: [BookSeriesRef] = []
+    /// Volumes bound into this book, and books this one is bound into.
+    @State private var contents: [BookContentLink] = []
+    @State private var containers: [BookContentLink] = []
+    /// Another book pushed from this one: a volume inside this omnibus, or the
+    /// omnibus this volume sits in.
+    @State private var pushedBook: Book?
+    /// The reader's wishlist entry for this book, when they have one. A wish is
+    /// a row of its own rather than a flag on the book, because most wishes are
+    /// for books no catalogue has heard of.
+    @State private var wishEntry: WishlistEntry?
+    @State private var wishBusy = false
+    /// Whether the wishlist answered at all. A failed check looked exactly like
+    /// "not on the wishlist", so the menu offered to add a book that was
+    /// already on it and adding again is a second row, not a no-op.
+    @State private var wishKnown = false
     @State private var activeLoan: Loan?
     @State private var coverCacheBuster: Int = 0
 
@@ -130,6 +145,16 @@ struct RedesignedBookDetailView: View {
                             seriesList
                         }
                     }
+                    if !contents.isEmpty {
+                        section(label: contents.count == 1 ? "Contains" : "Contains (\(contents.count))") {
+                            containmentList(contents, positionKnown: true)
+                        }
+                    }
+                    if !containers.isEmpty {
+                        section(label: containers.count == 1 ? "Bound into" : "Bound into (\(containers.count))") {
+                            containmentList(containers, positionKnown: false)
+                        }
+                    }
                     if !copies.isEmpty {
                         section(label: copies.count == 1 ? "Copy" : "Copies (\(copies.count))") {
                             copiesList
@@ -151,10 +176,13 @@ struct RedesignedBookDetailView: View {
             .scrollIndicators(.hidden)
         }
         .toolbar(.hidden, for: .navigationBar)
+        .navigationDestination(item: $pushedBook) { book in
+            RedesignedBookDetailView(library: library, book: book)
+        }
         // Light up the Library tab on the floating bar regardless of
         // which tab the user navigated from (Search results, Home
         // strip, Library books grid, etc).
-        .preference(key: LogicalTabPreferenceKey.self, value: AppTab.library)
+        .preference(key: LogicalTabPreferenceKey.self, value: AppTab.books)
         .task { await loadDetail() }
         .sheet(isPresented: $showEdit) {
             if isLocalLibrary, let accountID = localAccountID {
@@ -284,10 +312,32 @@ struct RedesignedBookDetailView: View {
             ) {
                 Task { await toggleFavorite() }
             }
+            // A bare bookmark is a guess, and on a touch screen there is no
+            // hover to reveal what it does. The icon stays, because the nav bar
+            // is where iOS puts icons; the meaning goes to VoiceOver, which is
+            // the only reader that had no way to find it.
+            .accessibilityLabel(displayIsFavorite ? "Remove from favourites" : "Add to favourites")
+            .accessibilityAddTraits(displayIsFavorite ? [.isSelected] : [])
             .disabled(primaryEdition == nil)
             .opacity(primaryEdition == nil ? 0.4 : 1.0)
 
             Menu {
+                // Only against a real server. A Lite library has no wishlist
+                // route behind it, and a menu item that always fails is worse
+                // than one that is not there.
+                if !isLocalLibrary {
+                    Button {
+                        Task { await toggleWish() }
+                    } label: {
+                        Label(
+                            wishEntry == nil ? "Add to wishlist" : "Remove from wishlist",
+                            systemImage: wishEntry == nil ? "heart" : "heart.slash"
+                        )
+                    }
+                    // Off until the wishlist has actually answered. Offering
+                    // "Add" on a guess is how a book ends up on it twice.
+                    .disabled(wishBusy || !wishKnown)
+                }
                 // Edit routes to whichever sheet can actually write:
                 // AddEditBookSheet saves through the api, LiteEditBookSheet
                 // through SwiftData. Scan-cover and clear-cover stay
@@ -1202,6 +1252,96 @@ struct RedesignedBookDetailView: View {
         return parts.isEmpty ? "Edition" : parts.joined(separator: " · ")
     }
 
+    // MARK: - Containment
+
+    /// What this book holds, or what holds it.
+    ///
+    /// Worth its own section rather than a line in the series list: it is the
+    /// answer to "I own the three-in-one, so do I have volume two", and it is
+    /// what stops a shelf full of omnibuses reporting a run full of gaps.
+    @ViewBuilder
+    private func containmentList(_ links: [BookContentLink], positionKnown: Bool) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(links.enumerated()), id: \.element.id) { idx, link in
+                Button { openContained(link) } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: positionKnown ? "square.stack.3d.down.right" : "shippingbox")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.Colors.accent)
+                            .frame(width: 28, height: 28)
+                            .background(Theme.Colors.accentSoft, in: RoundedRectangle(cornerRadius: 7))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(link.title.isEmpty ? "Untitled" : link.title)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Theme.Colors.appText)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            if positionKnown {
+                                Text("Vol. " + link.positionLabel)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(Theme.Colors.appText3)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Theme.Colors.appText3)
+                    }
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if idx != links.count - 1 {
+                    Divider().background(Theme.Colors.appLine)
+                }
+            }
+        }
+    }
+
+    /// Want it, or stop wanting it.
+    ///
+    /// Refreshed from the server afterwards rather than assumed: the add route
+    /// returns the entry, but the id is what the remove needs and guessing it
+    /// would leave a wish nobody can take back.
+    private func toggleWish() async {
+        guard !isLocalLibrary else { return }
+        wishBusy = true
+        defer { wishBusy = false }
+        let client = appState.makeClient(serverURL: library.serverURL)
+        let service = WishlistService(client: client)
+        if let entry = wishEntry {
+            try? await service.remove(entryId: entry.id)
+        } else {
+            try? await service.add(bookId: currentBook.id)
+        }
+        await loadWish()
+    }
+
+    private func loadWish() async {
+        guard !isLocalLibrary else { return }
+        let client = appState.makeClient(serverURL: library.serverURL)
+        do {
+            let entries = try await WishlistService(client: client).list()
+            wishEntry = entries.first { $0.bookId == currentBook.id }
+            wishKnown = true
+        } catch {
+            // Left unknown rather than assumed absent.
+            wishKnown = false
+        }
+    }
+
+    /// The other end of the link, fetched without naming a library: a volume
+    /// that exists only inside an omnibus belongs to none.
+    private func openContained(_ link: BookContentLink) {
+        let otherID = link.otherID(from: currentBook.id)
+        Task {
+            let client = appState.makeClient(serverURL: library.serverURL)
+            if let book = try? await BookService(client: client).get(bookId: otherID) {
+                pushedBook = book
+            }
+        }
+    }
+
     // MARK: - Series + shelves
 
     @ViewBuilder
@@ -1429,15 +1569,22 @@ struct RedesignedBookDetailView: View {
             // list has never been cached, so it is absent rather than wrong.
             bookLists = shelves.map(\.asSavedList)
             seriesRefs = []
+            contents = []
+            containers = []
         } else {
             let client = appState.makeClient(serverURL: library.serverURL)
             async let e  = BookService(client: client).editions(libraryId: library.id, bookId: currentBook.id)
             async let s  = BookService(client: client).shelves(libraryId: library.id, bookId: currentBook.id)
+            async let contentsTask = BookContentsService(client: client).contents(bookId: currentBook.id)
+            async let containersTask = BookContentsService(client: client).containers(bookId: currentBook.id)
             async let sr = BookService(client: client).seriesRefs(libraryId: library.id, bookId: currentBook.id)
 
             editions = (try? await e) ?? editionCache.editions(for: library, bookId: currentBook.id)
             shelves = (try? await s) ?? shelfCache.shelves(for: library, bookId: currentBook.id)
             seriesRefs = (try? await sr) ?? []
+            contents = ((try? await contentsTask) ?? []).sorted { $0.position < $1.position }
+            containers = (try? await containersTask) ?? []
+            await loadWish()
 
             // Asked per server. A shelf is a list shared with a library, so the
             // shelf read only ever returned those, and every private list a

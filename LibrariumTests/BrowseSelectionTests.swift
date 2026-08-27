@@ -84,6 +84,21 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertEqual(query(a)["genre"], "Comedy,Drama,Horror")
     }
 
+    func testAContributorIsAskedForByIdAndCountsAsAFilter() {
+        // By id, not by name. Naming a person is a different question from
+        // searching for their name: "Tite" the person is not a book with Tite
+        // in its title.
+        var selection = BrowseSelection()
+        selection.contributors = ["c-1", "c-2"]
+        XCTAssertEqual(query(selection)["contributor"], "c-1,c-2")
+        // It counts, even though the sheet has no section for it. A grid
+        // narrowed to one author with no badge showing is a grid that looks
+        // broken.
+        XCTAssertEqual(selection.activeCount, 1)
+        selection.clear()
+        XCTAssertTrue(selection.contributors.isEmpty)
+    }
+
     func testAnEmptySearchIsNotASearch() {
         var selection = BrowseSelection()
         selection.query = "   "
@@ -109,6 +124,98 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertEqual(merged.library.count, 2)
     }
 
+    // MARK: - Which server answers a /me route
+
+    func testALocalURLIsRecognisedAsALiteAccount() {
+        // `local://` is not a scheme URLSession can open. A request built on
+        // one fails with "unsupported URL", and a caller that swallows errors
+        // reads that as a server with nothing on it: that is exactly what hid
+        // every saved view on an install whose primary account was a Lite one,
+        // and with them the default view and its grouping.
+        XCTAssertTrue(ServerAccount.isLocalURL("local://6A5F41C8-5E1A-452D-9B1D-EEA6AA6CBB0E"))
+        XCTAssertFalse(ServerAccount.isLocalURL("https://librarium.example"))
+        // Not a prefix match on the word: a real host can start with "local".
+        XCTAssertFalse(ServerAccount.isLocalURL("https://localhost:8080"))
+    }
+
+    func testALiteCollectionOffersOnlyTheDimensionsItCanAnswer() {
+        // Ownership, lists, shelf locations and the average rating are server
+        // concepts: a Lite library has no wishlist, no gap detection and no
+        // other readers to average. Offering those filters would be offering a
+        // control that can only ever return nothing, which reads as an empty
+        // collection rather than an inapplicable question.
+        XCTAssertTrue(LocalBrowse.answers(.mediaType))
+        XCTAssertTrue(LocalBrowse.answers(.tag))
+        XCTAssertTrue(LocalBrowse.answers(.genre))
+        XCTAssertTrue(LocalBrowse.answers(.readStatus))
+        XCTAssertTrue(LocalBrowse.answers(.myRating))
+        XCTAssertTrue(LocalBrowse.answers(.library))
+
+        XCTAssertFalse(LocalBrowse.answers(.ownership))
+        XCTAssertFalse(LocalBrowse.answers(.shelf))
+        XCTAssertFalse(LocalBrowse.answers(.location))
+        XCTAssertFalse(LocalBrowse.answers(.rating))
+        XCTAssertFalse(LocalBrowse.answers(.favourite))
+    }
+
+    // MARK: - Cancellation
+
+    func testACancelledRequestIsNotAFailure() {
+        // A view that goes away mid-request cancels it. Reporting that puts the
+        // word "cancelled" in front of someone who did nothing but switch tabs,
+        // and it also marks the load as having failed so nothing tries again.
+        let urlCancel = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+        XCTAssertTrue(BrowseViewModel.isCancellation(urlCancel))
+        XCTAssertTrue(BrowseViewModel.isCancellation(CancellationError()))
+        // Wrapped by the client, which is how it actually arrives.
+        XCTAssertTrue(BrowseViewModel.isCancellation(APIError.networkError(urlCancel)))
+    }
+
+    func testARealNetworkFailureStillCounts() {
+        // The guard has to be narrow. Treating every network error as a cancel
+        // brings back the silent empty shelf this was meant to end.
+        let offline = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+        XCTAssertFalse(BrowseViewModel.isCancellation(offline))
+        XCTAssertFalse(BrowseViewModel.isCancellation(APIError.unauthorized))
+    }
+
+    // MARK: - Merging two servers
+
+    private func book(title: String, created: String, year: Int?) throws -> Book {
+        let y = year.map(String.init) ?? "null"
+        let json = Data("""
+        {"id":"\(title)","title":"\(title)","created_at":"\(created)","updated_at":"\(created)",
+         "publish_year":\(y),"contributors":[],"tags":[],"genres":[],"libraries":[]}
+        """.utf8)
+        return try decoder().decode(Book.self, from: json)
+    }
+
+    func testTimestampsFromTwoZonesMergeByInstantNotByText() throws {
+        // The later instant, written with an offset that sorts earlier as text.
+        // Comparing the strings puts them the wrong way round, and a
+        // recently-added list that is subtly wrong is worse than no sort.
+        let earlier = try book(title: "Earlier", created: "2026-01-01T12:00:00+01:00", year: nil)
+        let later = try book(title: "Later", created: "2026-01-01T12:00:00-04:00", year: nil)
+
+        let newestFirst = BrowseViewModel.merge([earlier, later], by: .recentlyAdded)
+        XCTAssertEqual(newestFirst.first?.title, "Later")
+    }
+
+    func testReleaseOrderUsesThePublishYear() throws {
+        // Not updated_at, which is when somebody last touched the row.
+        let old = try book(title: "Old", created: "2026-01-01T00:00:00Z", year: 1968)
+        let new = try book(title: "New", created: "2020-01-01T00:00:00Z", year: 2024)
+
+        XCTAssertEqual(BrowseViewModel.merge([old, new], by: .newestRelease).first?.title, "New")
+        XCTAssertEqual(BrowseViewModel.merge([old, new], by: .oldestRelease).first?.title, "Old")
+    }
+
+    func testTitleOrderIgnoresALeadingArticle() throws {
+        let bad = try book(title: "The Bad Guys", created: "2026-01-01T00:00:00Z", year: nil)
+        let cat = try book(title: "Cat", created: "2026-01-01T00:00:00Z", year: nil)
+        XCTAssertEqual(BrowseViewModel.merge([cat, bad], by: .titleAsc).first?.title, "The Bad Guys")
+    }
+
     // MARK: - Labels
 
     func testRatingsReadAsStarsRatherThanPoints() {
@@ -122,6 +229,115 @@ final class BrowseSelectionTests: XCTestCase {
     func testAGapIsCalledWhatPeopleCallIt() {
         XCTAssertEqual(FacetLabels.ownership("gap"), "Missing volume")
         XCTAssertEqual(FacetLabels.ownership("shelf"), "On the shelf")
+    }
+
+    // MARK: - Saved views
+
+    func testAViewRoundTripsThroughItsQueryString() {
+        // A view stores the same string the requests carry. If saving and
+        // reopening used two spellings of one filter they would drift, and the
+        // name on the chip would stop describing the list under it.
+        var original = BrowseSelection()
+        original[.ownership] = ["gap"]
+        original[.mediaType] = ["manga"]
+        original[.genre] = ["Horror", "Comedy"]
+        original.contributors = ["c-1"]
+        original.query = "bleach"
+
+        let reopened = BrowseSelection(query: original.queryString())
+        XCTAssertEqual(reopened[.ownership], ["gap"])
+        XCTAssertEqual(reopened[.mediaType], ["manga"])
+        XCTAssertEqual(reopened[.genre], ["Horror", "Comedy"])
+        XCTAssertEqual(reopened.contributors, ["c-1"])
+        XCTAssertEqual(reopened.query, "bleach")
+        XCTAssertEqual(reopened.queryString(), original.queryString())
+    }
+
+    func testAViewWithNoOwnershipMeansTheShelf() {
+        // Absent is the default, not "no filter". The web omits ownership from
+        // a view's query string when it is the ordinary shelf selection, so
+        // reading absence as every state opened a saved view on the wishlist,
+        // the suggestions and every missing volume mixed in.
+        let reopened = BrowseSelection(query: "type=manga")
+        XCTAssertEqual(reopened[.ownership], BrowseSelection.defaultOwnership)
+        XCTAssertEqual(reopened[.mediaType], ["manga"])
+    }
+
+    func testClearingOwnershipSurvivesBeingSaved() {
+        // Cleared needs a value of its own. An empty one reads as absent and
+        // snaps back to the shelf, which makes "show me everything" impossible
+        // to save.
+        var selection = BrowseSelection()
+        selection[.ownership] = []
+        XCTAssertEqual(query(selection).isEmpty, true)
+        XCTAssertEqual(selection.queryString(), "own=any")
+        XCTAssertTrue(BrowseSelection(query: "own=any")[.ownership].isEmpty)
+    }
+
+    func testTheDefaultOwnershipIsOmittedFromASavedView() {
+        // So an ordinary view stays clean, and matches what the web writes for
+        // the same selection.
+        XCTAssertEqual(BrowseSelection().queryString(), "")
+    }
+
+    func testGroupingRoundTrips() {
+        var selection = BrowseSelection()
+        selection.grouped = true
+        XCTAssertEqual(selection.queryString(), "group=series")
+        XCTAssertTrue(BrowseSelection(query: "group=series").grouped)
+    }
+
+    func testOpeningARunTurnsGroupingOff() {
+        // Collapsing a run back into itself shows one row holding everything on
+        // screen.
+        let inside = BrowseSelection(query: "group=series&series=s-1")
+        XCTAssertFalse(inside.grouped)
+        XCTAssertEqual(inside.series, ["s-1"])
+    }
+
+    func testAViewSurvivesAValueWithASeparatorInIt() {
+        // Genres and tags are free text. A percent-encoded name has to come
+        // back whole rather than split into two filters that match nothing.
+        var original = BrowseSelection()
+        original[.genre] = ["Boys' Love"]
+        let reopened = BrowseSelection(query: original.queryString())
+        XCTAssertEqual(reopened[.genre], ["Boys' Love"])
+    }
+
+    func testSeriesViewsRoundTripToo() {
+        var original = SeriesSelection()
+        original[.status] = ["ongoing"]
+        original[.reading] = ["reading"]
+        original.query = "one piece"
+
+        let reopened = SeriesSelection(query: original.queryString())
+        XCTAssertEqual(reopened[.status], ["ongoing"])
+        XCTAssertEqual(reopened[.reading], ["reading"])
+        XCTAssertEqual(reopened.query, "one piece")
+    }
+
+    func testAStoredViewDecodesItsSurfaceAndFilter() throws {
+        // Taken off a running server. `surface` says which page it lands on and
+        // `filter` is nested rather than a bare string.
+        let json = Data("""
+        {"id":"v-1","name":"Default","kind":"smart","surface":"series",
+         "builtin_key":"default","filter":{"query":"status=ongoing"},"book_count":0}
+        """.utf8)
+        let view = try decoder().decode(SavedList.self, from: json)
+        XCTAssertEqual(view.surface, "series")
+        XCTAssertEqual(view.filterQuery, "status=ongoing")
+        XCTAssertTrue(view.isSmart)
+        XCTAssertTrue(view.isDefault)
+    }
+
+    func testAListFromBeforeSurfacesExistedLandsOnBooks() throws {
+        let json = Data("""
+        {"id":"l-1","name":"Childhood favourites","kind":"manual","book_count":1}
+        """.utf8)
+        let list = try decoder().decode(SavedList.self, from: json)
+        XCTAssertEqual(list.surface, "books")
+        XCTAssertEqual(list.filterQuery, "")
+        XCTAssertFalse(list.isSmart)
     }
 
     // MARK: - Decoding what the server actually sends

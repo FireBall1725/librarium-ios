@@ -26,6 +26,22 @@ struct MeBrowseService {
         return try await client.get(Self.path("/api/v1/me/books", items))
     }
 
+    /// The same list with each run collapsed into one row.
+    ///
+    /// A separate endpoint rather than a parameter on the list, because the
+    /// rows are a different shape: a run is not a book and pretending otherwise
+    /// would mean every client unpacking a union out of the book fields.
+    func grouped(selection: BrowseSelection, sort: BookSortOption, page: Int, perPage: Int)
+        async throws -> GroupedPage
+    {
+        var items = selection.queryItems()
+        items.append(URLQueryItem(name: "page", value: String(page)))
+        items.append(URLQueryItem(name: "per_page", value: String(perPage)))
+        items.append(URLQueryItem(name: "sort", value: sort.field))
+        items.append(URLQueryItem(name: "sort_dir", value: sort.dir))
+        return try await client.get(Self.path("/api/v1/me/books/grouped", items))
+    }
+
     /// The counts for every dimension, from one request.
     ///
     /// Sent with the same selection as the list, because each dimension is
@@ -48,6 +64,57 @@ struct MeBrowseService {
         let data: BookFacets
     }
 
+    // MARK: - Series
+
+    /// Every run the account can read, with its counts and the facets beside
+    /// them. One request per account rather than one per library.
+    func series(selection: SeriesSelection, sort: SeriesSortOption) async throws -> SeriesIndexPage {
+        var items = selection.queryItems()
+        if sort != .name {
+            items.append(URLQueryItem(name: "sort", value: sort.field))
+            // Descending for every sort but name. Nobody opens this asking for
+            // the run with the fewest volumes missing.
+            items.append(URLQueryItem(name: "dir", value: "desc"))
+        }
+        // The index builds a strip of up to sixty covers per run for the page
+        // that draws them. The mosaic here draws four, and asking for the rest
+        // is work nobody sees.
+        items.append(URLQueryItem(name: "volumes", value: "4"))
+        return try await client.get(Self.path("/api/v1/me/series/index", items))
+    }
+
+    // MARK: - Authors
+
+    /// Everyone credited on a book the account can read, with the spines to
+    /// show for it. Filtered by role rather than searched: naming a role is a
+    /// different question from matching a name.
+    func authors(libraries: Set<String>, roles: Set<String>) async throws -> AuthorIndexPage {
+        var items: [URLQueryItem] = []
+        if !libraries.isEmpty {
+            items.append(URLQueryItem(name: "lib", value: libraries.sorted().joined(separator: ",")))
+        }
+        if !roles.isEmpty {
+            items.append(URLQueryItem(name: "role", value: roles.sorted().joined(separator: ",")))
+        }
+        return try await client.get(Self.path("/api/v1/me/authors/index", items))
+    }
+
+    // MARK: - Loans
+
+    /// Every loan across every library, in one request.
+    ///
+    /// "Who has my stuff" is not a question anyone asks one library at a time,
+    /// and until now the phone could only answer it one book at a time, from
+    /// that book's own page.
+    func loans(query: String, includeReturned: Bool, overdueOnly: Bool) async throws -> LoanPage {
+        var items: [URLQueryItem] = []
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { items.append(URLQueryItem(name: "q", value: trimmed)) }
+        if includeReturned { items.append(URLQueryItem(name: "include_returned", value: "true")) }
+        if overdueOnly { items.append(URLQueryItem(name: "overdue", value: "true")) }
+        return try await client.get(Self.path("/api/v1/me/loans", items))
+    }
+
     // MARK: - Counts
 
     func counts() async throws -> CollectionCounts {
@@ -63,6 +130,21 @@ struct MeBrowseService {
         var comps = URLComponents()
         comps.queryItems = items
         return base + "?" + (comps.percentEncodedQuery ?? "")
+    }
+}
+
+// MARK: - Loans
+
+struct LoanPage: Decodable {
+    let items: [Loan]
+    let total: Int
+
+    enum CodingKeys: String, CodingKey { case items, total }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        items = try c.decodeIfPresent([Loan].self, forKey: .items) ?? []
+        total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
     }
 }
 

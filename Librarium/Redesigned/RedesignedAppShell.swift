@@ -28,14 +28,28 @@ struct RedesignedAppShell: View {
     @Environment(AppState.self) private var appState
 
     @State private var selectedTab: AppTab = .home
-    @State private var selectedLibrary: Library?
     @State private var showScan = false
     /// Book the books grid should push once it appears. Set when the
     /// scanner finds the book already on a shelf and the user asks to
     /// open it; cleared by the grid after it pushes.
     @State private var pendingOpenBookID: String?
+    /// Shown when the reader asks to change collections rather than at launch,
+    /// which is why it is separate from `needsSourceChoice`.
+    @State private var showSourcePicker = false
 
     var body: some View {
+        // Nothing is scoped until a collection is open, so the picker replaces
+        // the shell rather than sitting on top of it: a tab bar over a screen
+        // that has no source to read is four tabs that cannot answer anything.
+        if appState.needsSourceChoice {
+            SourcePickerView()
+        } else {
+            shell
+        }
+    }
+
+    @ViewBuilder
+    private var shell: some View {
         ZStack(alignment: .bottom) {
             // Each tab's content is kept alive in a ZStack and shown via
             // opacity rather than swapped with `if/else`. iOS 26's
@@ -49,22 +63,32 @@ struct RedesignedAppShell: View {
                     .opacity(selectedTab == .home ? 1 : 0)
                     .allowsHitTesting(selectedTab == .home)
 
-                // The books surface, not a search box. Search is one filter
-                // among eleven here, the same way `q` is one parameter among
-                // several on `/me/books`; the cross-entity search this tab used
-                // to be is behind the magnifying glass in its header.
-                RedesignedBrowseView()
-                    .opacity(selectedTab == .books ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .books)
+                RedesignedSearchView()
+                    .opacity(selectedTab == .search ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .search)
 
-                libraryTab
-                    .opacity(selectedTab == .library ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .library)
+                // The collection, with library as one filter among eleven
+                // rather than the way in. The per-library screens are still
+                // here, one level down from this tab's overflow, because that
+                // is where syncing a library offline and adding to it live.
+                RedesignedBrowseView(
+                    openBookID: $pendingOpenBookID,
+                    isActive: selectedTab == .books
+                )
+                .opacity(selectedTab == .books ? 1 : 0)
+                .allowsHitTesting(selectedTab == .books)
 
                 RedesignedSeriesListView()
                     .opacity(selectedTab == .series ? 1 : 0)
                     .allowsHitTesting(selectedTab == .series)
             }
+            // Rebuilt from scratch when the collection changes. Every tab holds
+            // its own loaded books, counts, filters and navigation stack, and
+            // all of them belong to the collection they came from: a library
+            // filter is another server's UUID, a saved view is another server's
+            // row. Asking each surface to notice and reset itself is five
+            // places to get it wrong; this is one place to get it right.
+            .id(appState.activeSource?.id)
             // Reserve space for the floating bar so scroll content can
             // clear the pill. 64pt bar + 26pt gap = 90pt. We need both
             // modifiers: `safeAreaPadding` for plain layout descendants
@@ -85,43 +109,29 @@ struct RedesignedAppShell: View {
             )
             .padding(.bottom, 4)
         }
+        .sheet(isPresented: $showSourcePicker) {
+            SourcePickerView(onCancel: { showSourcePicker = false })
+        }
+        .environment(\.switchSource, { showSourcePicker = true })
         .fullScreenCover(isPresented: $showScan) {
             RedesignedScanFlow(
                 onClose: { showScan = false },
                 onOpenBook: { library, bookID in
-                    // Close the scanner, land on the book's library, and
-                    // let the books grid push the detail once it has the
-                    // book loaded.
+                    // Scanning is the one thing that asks every collection at
+                    // once, so the answer can be in one the reader does not
+                    // currently have open. Opening it moves them there rather
+                    // than pushing a book the surfaces cannot see: without
+                    // this, a match on the server while the Lite collection was
+                    // open simply never loaded.
                     showScan = false
-                    selectedLibrary = library
+                    if let account = appState.accounts.first(where: { $0.url == library.serverURL }),
+                       appState.activeSource?.id != account.id {
+                        appState.setActiveSource(id: account.id)
+                    }
                     pendingOpenBookID = bookID
-                    selectedTab = .library
+                    selectedTab = .books
                 }
             )
-        }
-    }
-
-    @ViewBuilder
-    private var libraryTab: some View {
-        if let library = selectedLibrary {
-            // Wrap in NavigationStack so RedesignedBooksView's
-            // `.navigationDestination` (book detail) has somewhere to
-            // push. Pass `\.libraryBack` so the header chevron in the
-            // books grid pops back to the library list.
-            NavigationStack {
-                RedesignedBooksView(library: library, openBookID: $pendingOpenBookID)
-                    .environment(\.libraryBack, { selectedLibrary = nil })
-                    // Tabs are kept alive in the ZStack above, so this
-                    // view survives a library change and would otherwise
-                    // keep the previous library's @State: its loaded
-                    // books, and a .task that never runs again. Keying
-                    // on the library forces a fresh view per library.
-                    .id(library.clientKey)
-            }
-        } else {
-            RedesignedLibrariesView { lib in
-                selectedLibrary = lib
-            }
         }
     }
 
@@ -130,7 +140,7 @@ struct RedesignedAppShell: View {
 // MARK: - Tab identity
 
 enum AppTab: Hashable {
-    case home, books, library, series
+    case home, search, books, series
 }
 
 /// Detail views advertise the tab they "logically belong to" via this
@@ -169,9 +179,9 @@ private struct EditorialTabBar: View {
     var body: some View {
         HStack(spacing: 0) {
             tab(.home,    icon: "house.fill",          label: "Home")
-            tab(.books,   icon: "books.vertical",       label: "Books")
+            tab(.search,  icon: "magnifyingglass",      label: "Search")
             scanFAB
-            tab(.library, icon: "building.columns.fill", label: "Libraries")
+            tab(.books,   icon: "books.vertical.fill",  label: "Books")
             tab(.series,  icon: "list.number",         label: "Series")
         }
         .padding(.horizontal, 12)

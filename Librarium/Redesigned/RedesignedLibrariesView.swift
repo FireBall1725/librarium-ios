@@ -41,7 +41,10 @@ final class RedesignedLibrariesViewModel {
         error = nil
         defer { isLoading = false }
 
-        let accounts = appState.accounts
+        // The open collection's libraries. This screen is reached from inside a
+        // collection, so listing another server's libraries beside them would
+        // offer a way out of the one the reader chose without saying so.
+        let accounts = [appState.activeSource].compactMap { $0 }
         guard !accounts.isEmpty else {
             libraries = []
             return

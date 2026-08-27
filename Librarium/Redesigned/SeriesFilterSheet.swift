@@ -3,19 +3,15 @@
 
 import SwiftUI
 
-/// Every filter the collection can be narrowed by, with what each would return.
-///
-/// The web client puts these in a rail down the side of the page. A rail is a
-/// desk shape: it assumes a spare 260 points of width that a phone does not
-/// have. The dimensions, their order, and their counts are the same; the
-/// container is a sheet, and what is currently on shows as pills above the
-/// grid so the filter stays legible without opening anything.
-struct BrowseFilterPanel: View {
-    @Binding var selection: BrowseSelection
-    let facets: BookFacets
+/// The same sheet as the books filter, narrowed to what a run can be narrowed
+/// by. Kept as its own type rather than made generic: the two share a shape and
+/// nothing else, and one dimension here has no server behind it at all.
+/// The series filters, in a drawer on the right.
+struct SeriesFilterPanel: View {
+    @Binding var selection: SeriesSelection
+    let facets: SeriesFacets
     let onChange: () -> Void
     let onClose: () -> Void
-    var isLocal = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -45,27 +41,18 @@ struct BrowseFilterPanel: View {
             .padding(.top, 18)
             .padding(.bottom, 12)
 
-            BrowseFilterSheet(
+            SeriesFilterSheet(
                 selection: $selection, facets: facets,
-                onChange: onChange, isLocal: isLocal, embedded: true
+                onChange: onChange, embedded: true
             )
         }
     }
 }
 
-struct BrowseFilterSheet: View {
-    @Binding var selection: BrowseSelection
-    let facets: BookFacets
-    /// Called on every change rather than on dismiss. The counts are only worth
-    /// having if they move as the selection does, and that means a round trip
-    /// per tap.
+struct SeriesFilterSheet: View {
+    @Binding var selection: SeriesSelection
+    let facets: SeriesFacets
     let onChange: () -> Void
-    /// Whether the open collection lives on the device. Ownership, lists, shelf
-    /// locations and the average rating are server concepts, and a Lite library
-    /// has no wishlist, no gap detection and no other readers to average.
-    var isLocal = false
-    /// True when the rows are already inside a titled container, so the
-    /// navigation chrome below is somebody else's job.
     var embedded = false
 
     @Environment(\.dismiss) private var dismiss
@@ -98,8 +85,38 @@ struct BrowseFilterSheet: View {
     private var list: some View {
         Group {
             List {
-                ForEach(BrowseFacet.allCases) { facet in
-                    let values = isLocal && !LocalBrowse.answers(facet) ? [] : facets[facet]
+                Section {
+                    Button {
+                        selection.incompleteOnly.toggle()
+                        onChange()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: selection.incompleteOnly ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selection.incompleteOnly ? Theme.Colors.accent : Theme.Colors.appText3)
+                                .font(.system(size: 17))
+                            Text("Only runs with gaps")
+                                .font(Theme.Fonts.ui(15))
+                                .foregroundStyle(Theme.Colors.appText)
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Theme.Colors.appCard)
+                } header: {
+                    Label("Missing volumes", systemImage: "questionmark.square.dashed")
+                        .font(Theme.Fonts.ui(12, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText3)
+                } footer: {
+                    // Said out loud because it is the one filter here the
+                    // server does not compute, and it can only answer for runs
+                    // whose length somebody knows.
+                    Text("A run with no known length cannot be missing anything.")
+                        .font(Theme.Fonts.ui(11))
+                        .foregroundStyle(Theme.Colors.appText3)
+                }
+
+                ForEach(SeriesFacet.allCases) { facet in
+                    let values = facets[facet]
                     if !values.isEmpty {
                         Section {
                             ForEach(values) { value in
@@ -120,7 +137,7 @@ struct BrowseFilterSheet: View {
     }
 
     @ViewBuilder
-    private func row(_ facet: BrowseFacet, _ value: FacetValue) -> some View {
+    private func row(_ facet: SeriesFacet, _ value: FacetValue) -> some View {
         let on = selection[facet].contains(value.value)
         Button {
             selection.toggle(facet, value.value)
@@ -130,7 +147,7 @@ struct BrowseFilterSheet: View {
                 Image(systemName: on ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(on ? Theme.Colors.accent : Theme.Colors.appText3)
                     .font(.system(size: 17))
-                Text(FacetLabels.label(facet, value))
+                Text(SeriesFacetLabels.label(facet, value))
                     .font(Theme.Fonts.ui(15))
                     .foregroundStyle(Theme.Colors.appText)
                 Spacer(minLength: 8)
@@ -145,71 +162,68 @@ struct BrowseFilterSheet: View {
     }
 }
 
-// MARK: - Active filters
-
-/// What is currently on, as pills under the search field.
-///
-/// Each one removes its own filter when tapped. Without this the only way to
-/// tell a filtered grid from an empty shelf is to open the sheet and read it,
-/// and "why can I only see nine books" is the question that produces.
-struct ActiveFilterPills: View {
-    @Binding var selection: BrowseSelection
-    let facets: BookFacets
+/// What is currently narrowing the list, as pills under the search field.
+struct SeriesFilterPills: View {
+    @Binding var selection: SeriesSelection
+    let facets: SeriesFacets
     let onChange: () -> Void
 
     var body: some View {
         let pills = active
-        if !pills.isEmpty {
+        if !pills.isEmpty || selection.incompleteOnly {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(pills, id: \.id) { pill in
-                        Button {
-                            selection.toggle(pill.facet, pill.value)
+                    if selection.incompleteOnly {
+                        pill("With gaps") {
+                            selection.incompleteOnly = false
                             onChange()
-                        } label: {
-                            HStack(spacing: 5) {
-                                Text(pill.label)
-                                    .font(Theme.Fonts.ui(13, weight: .medium))
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 9, weight: .bold))
-                            }
-                            .foregroundStyle(Theme.Colors.accentStrong)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 6)
-                            .background(Capsule().fill(Theme.Colors.accentSoft))
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Remove filter \(pill.label)")
+                    }
+                    ForEach(pills, id: \.id) { p in
+                        pill(p.label) {
+                            selection.toggle(p.facet, p.value)
+                            onChange()
+                        }
                     }
                 }
-                .padding(.horizontal, 18)
+                .padding(.horizontal, 22)
             }
         }
     }
 
+    @ViewBuilder
+    private func pill(_ label: String, remove: @escaping () -> Void) -> some View {
+        Button(action: remove) {
+            HStack(spacing: 5) {
+                Text(label)
+                    .font(Theme.Fonts.ui(13, weight: .medium))
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .foregroundStyle(Theme.Colors.accentStrong)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Theme.Colors.accentSoft))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Remove filter \(label)")
+    }
+
     private struct Pill: Identifiable {
-        let facet: BrowseFacet
+        let facet: SeriesFacet
         let value: String
         let label: String
         var id: String { facet.rawValue + "/" + value }
     }
 
-    /// Ownership at its default produces no pill. Everyone browsing their own
-    /// shelf would carry an "On the shelf" chip they never asked for, and a
-    /// pill that is always there stops meaning anything.
     private var active: [Pill] {
         var out: [Pill] = []
-        for facet in BrowseFacet.allCases {
-            let vals = selection[facet]
-            if vals.isEmpty { continue }
-            if facet == .ownership && vals == BrowseSelection.defaultOwnership { continue }
+        for facet in SeriesFacet.allCases {
             let known = Dictionary(uniqueKeysWithValues: facets[facet].map { ($0.value, $0) })
-            for value in vals.sorted() {
-                // Falling back to the raw value matters: a filter can outlive
-                // the count that named it, and a pill with no label is a filter
-                // the reader cannot find or remove.
+            for value in selection[facet].sorted() {
                 let fv = known[value] ?? FacetValue(value: value, label: value, count: 0)
-                out.append(Pill(facet: facet, value: value, label: FacetLabels.label(facet, fv)))
+                out.append(Pill(facet: facet, value: value,
+                                label: SeriesFacetLabels.label(facet, fv)))
             }
         }
         return out
