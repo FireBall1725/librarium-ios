@@ -635,6 +635,11 @@ struct SeriesMosaic: View {
             }
         }
         .frame(width: width, height: height)
+        // Nothing on the shelf, so nothing in colour. A run that exists only as
+        // volumes nobody has drew a full-strength mosaic from its covers and
+        // read exactly like one the reader owns.
+        .saturation(series.bookCount == 0 ? 0 : 1)
+        .opacity(series.bookCount == 0 ? 0.55 : 1)
         .background(Theme.Colors.appLine)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .shadow(color: .black.opacity(0.4), radius: 4, y: 2)

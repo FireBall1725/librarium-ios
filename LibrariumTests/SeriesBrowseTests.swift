@@ -117,6 +117,25 @@ final class SeriesBrowseTests: XCTestCase {
         XCTAssertEqual(q["my_rating"], "10")
     }
 
+    // MARK: - Containment
+
+    func testAContainmentLinkNamesTheFarEnd() throws {
+        // The list routes fill only one end: asking what a book contains gives
+        // contained_id and leaves the container implicit, and asking what
+        // contains it does the reverse. A row that followed the wrong end would
+        // navigate back to the book already on screen.
+        let json = Data("""
+        {"container_id":"omnibus-1","contained_id":"vol-2","title":"Bleach #2","position":2}
+        """.utf8)
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let link = try d.decode(BookContentLink.self, from: json)
+
+        XCTAssertEqual(link.otherID(from: "omnibus-1"), "vol-2")
+        XCTAssertEqual(link.otherID(from: "vol-2"), "omnibus-1")
+        XCTAssertEqual(link.positionLabel, "2")
+    }
+
     func testOnlyRunsWithGapsIsNotSentToTheServer() {
         // The server has no facet for it. It is a subtraction over counts every
         // row already carries, so sending it would be asking for a filter that
