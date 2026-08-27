@@ -21,71 +21,63 @@ struct SideDrawer<Content: View>: View {
     @Binding var isOpen: Bool
     @ViewBuilder let content: () -> Content
 
-    /// How far a drag has taken the panel, before it is let go.
+    /// How far a drag has taken the panel while it is being closed.
     @State private var drag: CGFloat = 0
 
-    /// Wide enough to read a list in, narrow enough that the grid behind stays
-    /// visible: the panel is a filter over what is on screen, and hiding all of
-    /// it makes the counts abstract.
-    private let width: CGFloat = 300
-
     var body: some View {
-        GeometryReader { geo in
-            let w = min(width, geo.size.width * 0.86)
-            let closed = edge == .leading ? -w : w
-            let offset = isOpen ? drag : closed + drag
+        ZStack(alignment: edge == .leading ? .leading : .trailing) {
+            if isOpen {
+                // Nothing at all when closed, rather than a panel pushed off
+                // the edge by an offset. An offset that fails to apply leaves
+                // the whole panel sitting on the page, which is a worse failure
+                // than a missing animation and is exactly what happened.
+                Color.black.opacity(0.45)
+                    .ignoresSafeArea()
+                    .onTapGesture { close() }
+                    .transition(.opacity)
 
-            ZStack(alignment: edge == .leading ? .leading : .trailing) {
-                if isOpen {
-                    // Tapping the page behind closes it, which is what every
-                    // drawer on the platform does and what people try first.
-                    Color.black.opacity(0.45 * openness(offset: offset, width: w))
-                        .ignoresSafeArea()
-                        .onTapGesture { close() }
-                        .transition(.opacity)
-                }
-
-                content()
-                    .frame(width: w)
-                    .frame(maxHeight: .infinity)
-                    .background(Theme.Colors.appBackgroundEleva)
-                    .overlay(alignment: edge == .leading ? .trailing : .leading) {
-                        Rectangle()
-                            .fill(Theme.Colors.appLine)
-                            .frame(width: 0.5)
-                            .ignoresSafeArea()
-                    }
-                    .offset(x: offset)
-                    .gesture(dragGesture(width: w))
-                    .ignoresSafeArea(edges: .bottom)
+                panel
+                    .transition(.move(edge: edge == .leading ? .leading : .trailing))
             }
-            .animation(.interactiveSpring(response: 0.32, dampingFraction: 0.86), value: isOpen)
         }
-        .allowsHitTesting(isOpen)
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: isOpen)
     }
 
-    /// 0 when fully closed, 1 when fully open. Used to fade the backdrop with
-    /// the drag rather than snapping it on.
-    private func openness(offset: CGFloat, width: CGFloat) -> Double {
-        let travelled = width - abs(offset)
-        return max(0, min(1, travelled / width))
+    @ViewBuilder
+    private var panel: some View {
+        content()
+            // Wide enough to read a list in, narrow enough that the grid stays
+            // visible behind it: the counts are about what is on screen, and
+            // covering all of it makes them abstract.
+            .containerRelativeFrame(.horizontal) { length, _ in
+                min(300, length * 0.86)
+            }
+            .frame(maxHeight: .infinity)
+            .background(Theme.Colors.appBackgroundEleva)
+            .overlay(alignment: edge == .leading ? .trailing : .leading) {
+                Rectangle()
+                    .fill(Theme.Colors.appLine)
+                    .frame(width: 0.5)
+            }
+            .offset(x: drag)
+            .gesture(closeGesture)
+            .ignoresSafeArea(edges: .bottom)
     }
 
-    private func dragGesture(width: CGFloat) -> some Gesture {
+    /// Drag the open panel back toward its own edge to close it.
+    private var closeGesture: some Gesture {
         DragGesture(minimumDistance: 8)
             .onChanged { value in
-                // Only the direction that closes it. Dragging further open
-                // would pull the panel off its own edge.
                 let dx = value.translation.width
                 drag = edge == .leading ? min(0, dx) : max(0, dx)
             }
             .onEnded { value in
                 let dx = value.translation.width
                 let velocity = value.predictedEndTranslation.width - dx
-                let past = abs(dx) > width * 0.3
+                let far = abs(dx) > 90
                 let flicked = edge == .leading ? velocity < -120 : velocity > 120
                 drag = 0
-                if past || flicked { close() }
+                if far || flicked { close() }
             }
     }
 
