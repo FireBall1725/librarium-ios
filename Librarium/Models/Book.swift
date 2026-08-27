@@ -46,6 +46,12 @@ struct Book: Codable, Identifiable, Hashable {
     let userProgressPct: Double?   // 0–100; 0 / nil = no progress
     let activeLoanCount: Int?      // count of unreturned loans across editions
 
+    /// How the caller comes to have this book: `shelf`, `wishlist`,
+    /// `suggested`, or `gap` for a volume of a series they hold part of that
+    /// nobody has. Only the cross-library list sends it, so it is nil on every
+    /// other path and the grid falls back to drawing an ordinary book.
+    let ownership: String?
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id           = try c.decode(String.self,   forKey: .id)
@@ -67,6 +73,7 @@ struct Book: Codable, Identifiable, Hashable {
         userRating       = try c.decodeIfPresent(Int.self,    forKey: .userRating)
         userProgressPct  = try c.decodeIfPresent(Double.self, forKey: .userProgressPct)
         activeLoanCount  = try c.decodeIfPresent(Int.self,    forKey: .activeLoanCount)
+        ownership        = try c.decodeIfPresent(String.self, forKey: .ownership)
     }
 }
 

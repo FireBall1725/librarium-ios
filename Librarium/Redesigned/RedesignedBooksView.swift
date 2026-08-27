@@ -499,7 +499,7 @@ struct RedesignedBooksView: View {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
                 ForEach(vm.books, id: \.id) { book in
                     Button { selectedBook = book } label: {
-                        BookTile(book: book, library: library)
+                        BookTile(book: book, serverURL: library.serverURL)
                     }
                     .buttonStyle(.plain)
                     .onAppear {
@@ -717,9 +717,11 @@ struct RedesignedBooksView: View {
 
 // MARK: - Book tile
 
-private struct BookTile: View {
+struct BookTile: View {
     let book: Book
-    let library: Library
+    /// The server the cover hangs off, rather than a `Library`. A book can sit
+    /// in several libraries and the cross-library grid never had to pick one.
+    let serverURL: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -727,7 +729,7 @@ private struct BookTile: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(book.title)
                     .font(Theme.Fonts.ui(12, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.appText)
+                    .foregroundStyle(isMissing ? Theme.Colors.appText2 : Theme.Colors.appText)
                     // Reserve 2 lines so single-line titles still take
                     // the same vertical space as 2-line ones — keeps
                     // author rows aligned across columns.
@@ -763,6 +765,20 @@ private struct BookTile: View {
                     readStatus: book.userReadStatus
                 )
 
+                // A volume nobody has, from a series the collection holds part
+                // of. Drawn like a book because it is one, and desaturated
+                // because it is not on any shelf: a full-colour cover in the
+                // grid reads as owned, and the whole point of surfacing gaps is
+                // telling the two apart at a glance.
+                if isMissing {
+                    Color.black.opacity(0.45)
+                        .frame(width: w, height: h)
+                        .allowsHitTesting(false)
+                    missingChip
+                        .padding(8)
+                        .frame(maxHeight: .infinity, alignment: .bottomLeading)
+                }
+
                 if let count = book.activeLoanCount, count > 0 {
                     lentChip
                         .padding(8)
@@ -780,10 +796,24 @@ private struct BookTile: View {
         .aspectRatio(2.0/3.0, contentMode: .fit)
     }
 
+    private var isMissing: Bool { book.ownership == "gap" }
+
+    @ViewBuilder
+    private var missingChip: some View {
+        Text("Missing")
+            .font(.system(size: 9, weight: .bold))
+            .tracking(0.4)
+            .textCase(.uppercase)
+            .foregroundStyle(Theme.Colors.appBackground)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Theme.Colors.warn))
+    }
+
     /// Fanned cover URL — match against the library's server prefix so the
     /// authenticated cover endpoint is hit with the right Bearer token.
     private var coverURL: URL? {
-        library.coverURL(for: book.coverUrl)
+        CoverURL.resolve(book.coverUrl, serverURL: serverURL)
     }
 
     private var primaryAuthor: String? {
