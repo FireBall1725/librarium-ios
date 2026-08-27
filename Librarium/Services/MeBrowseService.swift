@@ -83,6 +83,22 @@ struct MeBrowseService {
         return try await client.get(Self.path("/api/v1/me/authors/index", items))
     }
 
+    // MARK: - Loans
+
+    /// Every loan across every library, in one request.
+    ///
+    /// "Who has my stuff" is not a question anyone asks one library at a time,
+    /// and until now the phone could only answer it one book at a time, from
+    /// that book's own page.
+    func loans(query: String, includeReturned: Bool, overdueOnly: Bool) async throws -> LoanPage {
+        var items: [URLQueryItem] = []
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { items.append(URLQueryItem(name: "q", value: trimmed)) }
+        if includeReturned { items.append(URLQueryItem(name: "include_returned", value: "true")) }
+        if overdueOnly { items.append(URLQueryItem(name: "overdue", value: "true")) }
+        return try await client.get(Self.path("/api/v1/me/loans", items))
+    }
+
     // MARK: - Counts
 
     func counts() async throws -> CollectionCounts {
@@ -98,6 +114,21 @@ struct MeBrowseService {
         var comps = URLComponents()
         comps.queryItems = items
         return base + "?" + (comps.percentEncodedQuery ?? "")
+    }
+}
+
+// MARK: - Loans
+
+struct LoanPage: Decodable {
+    let items: [Loan]
+    let total: Int
+
+    enum CodingKeys: String, CodingKey { case items, total }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        items = try c.decodeIfPresent([Loan].self, forKey: .items) ?? []
+        total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
     }
 }
 

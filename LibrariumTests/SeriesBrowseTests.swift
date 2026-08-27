@@ -117,6 +117,59 @@ final class SeriesBrowseTests: XCTestCase {
         XCTAssertEqual(q["my_rating"], "10")
     }
 
+    // MARK: - Loans
+
+    private func loan(due: String?, returned: String? = nil) throws -> Loan {
+        let d = due.map { "\"\($0)\"" } ?? "null"
+        let r = returned.map { "\"\($0)\"" } ?? "null"
+        let json = Data("""
+        {"id":"l-1","library_id":"lib-1","book_id":"b-1","book_title":"Bleach #1",
+         "loaned_to":"Sam","loaned_at":"2026-01-01","due_date":\(d),"returned_at":\(r),
+         "notes":"","tags":[],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
+        """.utf8)
+        let dec = JSONDecoder()
+        dec.keyDecodingStrategy = .convertFromSnakeCase
+        return try dec.decode(Loan.self, from: json)
+    }
+
+    func testALoanPastItsDueDateIsOverdue() throws {
+        XCTAssertTrue(try loan(due: "2020-01-01").isOverdue)
+    }
+
+    func testALoanWithNoDueDateIsNeverOverdue() throws {
+        // It was lent open-endedly. Inventing a deadline would put a red badge
+        // on a book nobody is waiting for.
+        XCTAssertFalse(try loan(due: nil).isOverdue)
+        XCTAssertNil(try loan(due: nil).dueLabel)
+    }
+
+    func testAReturnedLoanIsNotOverdueHoweverLateItWas() throws {
+        let back = try loan(due: "2020-01-01", returned: "2026-01-01T00:00:00Z")
+        XCTAssertFalse(back.isActive)
+        XCTAssertFalse(back.isOverdue)
+    }
+
+    func testAFullTimestampDueDateStillParses() throws {
+        // The column is a date on one route and a timestamp on another, so both
+        // spellings arrive and neither can be assumed.
+        XCTAssertTrue(try loan(due: "2020-01-01T12:30:00Z").isOverdue)
+    }
+
+    // MARK: - Wishlist
+
+    func testAWishNeedNotBeACatalogueRow() throws {
+        // Most of what anyone writes down in a shop is a book no catalogue has
+        // heard of, so a null book id is the ordinary case rather than an error.
+        let json = Data("""
+        {"id":"w-1","book_id":null,"title":"Something I saw","author_name":"","notes":"","priority":0}
+        """.utf8)
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let entry = try d.decode(WishlistEntry.self, from: json)
+        XCTAssertNil(entry.bookId)
+        XCTAssertEqual(entry.title, "Something I saw")
+    }
+
     // MARK: - Containment
 
     func testAContainmentLinkNamesTheFarEnd() throws {

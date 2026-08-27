@@ -53,6 +53,11 @@ struct RedesignedBookDetailView: View {
     /// Another book pushed from this one: a volume inside this omnibus, or the
     /// omnibus this volume sits in.
     @State private var pushedBook: Book?
+    /// The reader's wishlist entry for this book, when they have one. A wish is
+    /// a row of its own rather than a flag on the book, because most wishes are
+    /// for books no catalogue has heard of.
+    @State private var wishEntry: WishlistEntry?
+    @State private var wishBusy = false
     @State private var activeLoan: Loan?
     @State private var coverCacheBuster: Int = 0
 
@@ -313,6 +318,20 @@ struct RedesignedBookDetailView: View {
             .opacity(primaryEdition == nil ? 0.4 : 1.0)
 
             Menu {
+                // Only against a real server. A Lite library has no wishlist
+                // route behind it, and a menu item that always fails is worse
+                // than one that is not there.
+                if !isLocalLibrary {
+                    Button {
+                        Task { await toggleWish() }
+                    } label: {
+                        Label(
+                            wishEntry == nil ? "Add to wishlist" : "Remove from wishlist",
+                            systemImage: wishEntry == nil ? "heart" : "heart.slash"
+                        )
+                    }
+                    .disabled(wishBusy)
+                }
                 // Edit routes to whichever sheet can actually write:
                 // AddEditBookSheet saves through the api, LiteEditBookSheet
                 // through SwiftData. Scan-cover and clear-cover stay
@@ -1273,6 +1292,32 @@ struct RedesignedBookDetailView: View {
         }
     }
 
+    /// Want it, or stop wanting it.
+    ///
+    /// Refreshed from the server afterwards rather than assumed: the add route
+    /// returns the entry, but the id is what the remove needs and guessing it
+    /// would leave a wish nobody can take back.
+    private func toggleWish() async {
+        guard !isLocalLibrary else { return }
+        wishBusy = true
+        defer { wishBusy = false }
+        let client = appState.makeClient(serverURL: library.serverURL)
+        let service = WishlistService(client: client)
+        if let entry = wishEntry {
+            try? await service.remove(entryId: entry.id)
+        } else {
+            try? await service.add(bookId: currentBook.id)
+        }
+        await loadWish()
+    }
+
+    private func loadWish() async {
+        guard !isLocalLibrary else { return }
+        let client = appState.makeClient(serverURL: library.serverURL)
+        let entries = (try? await WishlistService(client: client).list()) ?? []
+        wishEntry = entries.first { $0.bookId == currentBook.id }
+    }
+
     /// The other end of the link, fetched without naming a library: a volume
     /// that exists only inside an omnibus belongs to none.
     private func openContained(_ link: BookContentLink) {
@@ -1527,6 +1572,7 @@ struct RedesignedBookDetailView: View {
             seriesRefs = (try? await sr) ?? []
             contents = ((try? await contentsTask) ?? []).sorted { $0.position < $1.position }
             containers = (try? await containersTask) ?? []
+            await loadWish()
 
             // Asked per server. A shelf is a list shared with a library, so the
             // shelf read only ever returned those, and every private list a

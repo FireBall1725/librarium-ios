@@ -164,23 +164,11 @@ struct RedesignedBrowseView: View {
             }
             Spacer()
 
-            // Authors sits here rather than in the tab bar. It is a way into
-            // the same books by a different axis, and the bar already carries
-            // four tabs and a scanner.
-            if initialSelection == nil {
-                NavigationLink { RedesignedAuthorsView() } label: {
-                    Image(systemName: "person.2")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Theme.Colors.appText2)
-                        .frame(width: 38, height: 38)
-                        .background(Color.white.opacity(0.06), in: Circle())
-                        .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Authors")
-                .padding(.bottom, 4)
-                iconButton("magnifyingglass", label: "Search everything") { showSearch = true }
-            }
+            // Five buttons across the top of a phone is a toolbar nobody can
+            // aim at. Sort and filter stay out because they are used on almost
+            // every visit; the surfaces you cross to occasionally go behind
+            // the overflow, which is where the web page puts them too.
+            if isRoot { moreMenu }
             sortMenu
             filterButton
         }
@@ -211,21 +199,6 @@ struct RedesignedBrowseView: View {
     }
 
     @ViewBuilder
-    private func iconButton(_ system: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: system)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Theme.Colors.appText2)
-                .frame(width: 38, height: 38)
-                .background(Color.white.opacity(0.06), in: Circle())
-                .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-        .padding(.bottom, 4)
-    }
-
-    @ViewBuilder
     private var filterButton: some View {
         let n = vm.selection.activeCount
         Button { showFilters = true } label: {
@@ -250,6 +223,30 @@ struct RedesignedBrowseView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(n > 0 ? "Filter, \(n) applied" : "Filter")
+        .padding(.bottom, 4)
+    }
+
+    @ViewBuilder
+    private var moreMenu: some View {
+        Menu {
+            NavigationLink { RedesignedAuthorsView() } label: {
+                Label("Authors", systemImage: "person.2")
+            }
+            NavigationLink { RedesignedLoansView() } label: {
+                Label("Loans", systemImage: "arrow.left.arrow.right")
+            }
+            Button { showSearch = true } label: {
+                Label("Search everything", systemImage: "magnifyingglass")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText2)
+                .frame(width: 38, height: 38)
+                .background(Color.white.opacity(0.06), in: Circle())
+                .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
+        }
+        .accessibilityLabel("More")
         .padding(.bottom, 4)
     }
 
