@@ -166,16 +166,41 @@ final class BrowseViewModel {
     // MARK: - Helpers
 
     /// Interleaves two servers' pages on the key the reader asked to sort by.
+    ///
+    /// Only reached with more than one account. With one, the server has
+    /// already ordered the page and this would be a second opinion about a
+    /// question already answered.
     nonisolated static func merge(_ rows: [Book], by sort: BookSortOption) -> [Book] {
         let ascending = sort.dir == "asc"
-        func key(_ b: Book) -> String {
+
+        func text(_ b: Book) -> String {
             switch sort {
-            case .titleAsc, .titleDesc:          return b.title.librariumSortKey()
-            case .authorAsc, .authorDesc:        return (b.contributors.first?.name ?? "").librariumSortKey()
-            case .recentlyAdded, .oldestFirst:   return b.createdAt
-            case .newestRelease, .oldestRelease: return b.updatedAt
+            case .titleAsc, .titleDesc:   return b.title.librariumSortKey()
+            case .authorAsc, .authorDesc: return (b.contributors.first?.name ?? "").librariumSortKey()
+            default: return ""
             }
         }
-        return rows.sorted { ascending ? key($0) < key($1) : key($0) > key($1) }
+
+        func number(_ b: Book) -> Double {
+            switch sort {
+            case .recentlyAdded, .oldestFirst:
+                // Parsed rather than compared as text. Two servers in different
+                // zones write the same instant with different offsets, and
+                // string order puts "…-04:00" before "…+01:00" whatever the
+                // clock says.
+                return (try? Date(b.createdAt, strategy: .iso8601)) .map(\.timeIntervalSince1970) ?? 0
+            case .newestRelease, .oldestRelease:
+                return Double(b.publishYear ?? 0)
+            default:
+                return 0
+            }
+        }
+
+        switch sort {
+        case .titleAsc, .titleDesc, .authorAsc, .authorDesc:
+            return rows.sorted { ascending ? text($0) < text($1) : text($0) > text($1) }
+        default:
+            return rows.sorted { ascending ? number($0) < number($1) : number($0) > number($1) }
+        }
     }
 }

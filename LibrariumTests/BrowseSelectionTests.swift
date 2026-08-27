@@ -124,6 +124,43 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertEqual(merged.library.count, 2)
     }
 
+    // MARK: - Merging two servers
+
+    private func book(title: String, created: String, year: Int?) throws -> Book {
+        let y = year.map(String.init) ?? "null"
+        let json = Data("""
+        {"id":"\(title)","title":"\(title)","created_at":"\(created)","updated_at":"\(created)",
+         "publish_year":\(y),"contributors":[],"tags":[],"genres":[],"libraries":[]}
+        """.utf8)
+        return try decoder().decode(Book.self, from: json)
+    }
+
+    func testTimestampsFromTwoZonesMergeByInstantNotByText() throws {
+        // The later instant, written with an offset that sorts earlier as text.
+        // Comparing the strings puts them the wrong way round, and a
+        // recently-added list that is subtly wrong is worse than no sort.
+        let earlier = try book(title: "Earlier", created: "2026-01-01T12:00:00+01:00", year: nil)
+        let later = try book(title: "Later", created: "2026-01-01T12:00:00-04:00", year: nil)
+
+        let newestFirst = BrowseViewModel.merge([earlier, later], by: .recentlyAdded)
+        XCTAssertEqual(newestFirst.first?.title, "Later")
+    }
+
+    func testReleaseOrderUsesThePublishYear() throws {
+        // Not updated_at, which is when somebody last touched the row.
+        let old = try book(title: "Old", created: "2026-01-01T00:00:00Z", year: 1968)
+        let new = try book(title: "New", created: "2020-01-01T00:00:00Z", year: 2024)
+
+        XCTAssertEqual(BrowseViewModel.merge([old, new], by: .newestRelease).first?.title, "New")
+        XCTAssertEqual(BrowseViewModel.merge([old, new], by: .oldestRelease).first?.title, "Old")
+    }
+
+    func testTitleOrderIgnoresALeadingArticle() throws {
+        let bad = try book(title: "The Bad Guys", created: "2026-01-01T00:00:00Z", year: nil)
+        let cat = try book(title: "Cat", created: "2026-01-01T00:00:00Z", year: nil)
+        XCTAssertEqual(BrowseViewModel.merge([cat, bad], by: .titleAsc).first?.title, "The Bad Guys")
+    }
+
     // MARK: - Labels
 
     func testRatingsReadAsStarsRatherThanPoints() {
