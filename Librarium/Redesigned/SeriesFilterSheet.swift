@@ -6,15 +6,84 @@ import SwiftUI
 /// The same sheet as the books filter, narrowed to what a run can be narrowed
 /// by. Kept as its own type rather than made generic: the two share a shape and
 /// nothing else, and one dimension here has no server behind it at all.
+/// The series filters, in a drawer on the right.
+struct SeriesFilterPanel: View {
+    @Binding var selection: SeriesSelection
+    let facets: SeriesFacets
+    let onChange: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Filter")
+                    .font(Theme.Fonts.display(20, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.appText)
+                Spacer()
+                Button("Clear") {
+                    selection.clear()
+                    onChange()
+                }
+                .font(Theme.Fonts.ui(13, weight: .medium))
+                .foregroundStyle(selection.activeCount == 0 ? Theme.Colors.appText3 : Theme.Colors.accent)
+                .disabled(selection.activeCount == 0)
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.Colors.appText3)
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close")
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+
+            SeriesFilterSheet(
+                selection: $selection, facets: facets,
+                onChange: onChange, embedded: true
+            )
+        }
+    }
+}
+
 struct SeriesFilterSheet: View {
     @Binding var selection: SeriesSelection
     let facets: SeriesFacets
     let onChange: () -> Void
+    var embedded = false
 
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        if embedded {
+            list
+        } else {
+            NavigationStack {
+                list
+                    .navigationTitle("Filter")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Clear") {
+                                selection.clear()
+                                onChange()
+                            }
+                            .disabled(selection.activeCount == 0)
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { dismiss() }
+                        }
+                    }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var list: some View {
+        Group {
             List {
                 Section {
                     Button {
@@ -61,23 +130,9 @@ struct SeriesFilterSheet: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(Theme.Colors.appBackground)
-            .navigationTitle("Filter")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Clear") {
-                        selection.clear()
-                        onChange()
-                    }
-                    .disabled(selection.activeCount == 0)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
         }
     }
 

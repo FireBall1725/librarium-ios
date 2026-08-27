@@ -19,12 +19,42 @@ struct RedesignedSeriesListView: View {
     @State private var vm = RedesignedSeriesListViewModel()
     @State private var selectedSeries: SeriesListEntry?
     @State private var showFilters = false
+    @State private var showViews = false
     @State private var searchTask: Task<Void, Never>?
     @State private var views: [SavedList] = []
     @State private var showSaveView = false
     @State private var newViewName = ""
 
     var body: some View {
+        ZStack {
+            page
+            SideDrawer(edge: .leading, isOpen: $showViews) {
+                SavedViewsPanel(
+                    views: views,
+                    activeID: activeViewID,
+                    canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
+                    onOpen: { open($0); showViews = false },
+                    onSave: {
+                        newViewName = ""
+                        showViews = false
+                        showSaveView = true
+                    },
+                    onDelete: { deleteView($0) },
+                    onClose: { showViews = false }
+                )
+            }
+            SideDrawer(edge: .trailing, isOpen: $showFilters) {
+                SeriesFilterPanel(
+                    selection: $vm.selection, facets: vm.facets,
+                    onChange: { reload() },
+                    onClose: { showFilters = false }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var page: some View {
         NavigationStack {
             ZStack {
                 Theme.Colors.appBackground.ignoresSafeArea()
@@ -33,17 +63,6 @@ struct RedesignedSeriesListView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         header
                         searchPill
-                        SavedViewsBar(
-                            views: views,
-                            activeID: activeViewID,
-                            canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
-                            onOpen: { open($0) },
-                            onSave: {
-                                newViewName = ""
-                                showSaveView = true
-                            }
-                        )
-                        .padding(.bottom, 10)
                         SeriesFilterPills(
                             selection: $vm.selection, facets: vm.facets,
                             onChange: { reload() }
@@ -56,6 +75,8 @@ struct RedesignedSeriesListView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(.hidden, for: .navigationBar)
+            .drawerEdges(leading: $showViews, trailing: $showFilters,
+                         enabled: !showViews && !showFilters)
             .task(id: appState.accounts.map(\.id)) {
                 let loaded = await loadViews()
                 if let fallback = loaded.first(where: { $0.isDefault }), vm.entries.isEmpty {
@@ -71,13 +92,6 @@ struct RedesignedSeriesListView: View {
             }
             .sheet(isPresented: $showSaveView) {
                 SaveViewSheet(name: $newViewName) { saveView() }
-            }
-            .sheet(isPresented: $showFilters) {
-                SeriesFilterSheet(
-                    selection: $vm.selection, facets: vm.facets,
-                    onChange: { reload() }
-                )
-                .presentationDetents([.large])
             }
             .onChange(of: vm.selection.query) { _, _ in
                 searchTask?.cancel()
@@ -113,6 +127,7 @@ struct RedesignedSeriesListView: View {
                     }
                 }
                 Spacer()
+                viewsButton
                 sortMenu
                 filterButton
             }
@@ -224,6 +239,30 @@ struct RedesignedSeriesListView: View {
                 .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
         }
         .accessibilityLabel("Sort")
+    }
+
+    @ViewBuilder
+    private var viewsButton: some View {
+        Button { showViews = true } label: {
+            Image(systemName: "sidebar.leading")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(activeViewID == nil ? Theme.Colors.appText2 : Theme.Colors.accentStrong)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(activeViewID == nil
+                                          ? Color.white.opacity(0.06) : Theme.Colors.accentSoft))
+                .overlay(Circle().stroke(activeViewID == nil
+                                         ? Theme.Colors.appLine : Color.clear, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Views")
+    }
+
+    private func deleteView(_ view: SavedList) {
+        Task {
+            guard let client = appState.makeServerClient() else { return }
+            try? await ListService(client: client).deleteView(id: view.id)
+            await loadViews()
+        }
     }
 
     @ViewBuilder

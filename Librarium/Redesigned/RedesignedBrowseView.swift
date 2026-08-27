@@ -40,6 +40,7 @@ struct RedesignedBrowseView: View {
     @State private var libraries: [String: Library] = [:]
     @State private var searchTask: Task<Void, Never>?
     @State private var showFilters = false
+    @State private var showViews = false
     @State private var showSearch = false
     @State private var selected: BookOpenRequest?
     @State private var selectedGroup: AuthorSelection?
@@ -63,6 +64,41 @@ struct RedesignedBrowseView: View {
 
     @ViewBuilder
     private var content: some View {
+        ZStack {
+            page
+            // Views on the left, filters on the right: the same sides the web
+            // client puts them on, so somebody who uses both does not have to
+            // learn a second arrangement.
+            if isRoot && !vm.isLocal {
+                SideDrawer(edge: .leading, isOpen: $showViews) {
+                    SavedViewsPanel(
+                        views: views,
+                        activeID: activeViewID,
+                        canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
+                        onOpen: { open($0); showViews = false },
+                        onSave: {
+                            newViewName = ""
+                            showViews = false
+                            showSaveView = true
+                        },
+                        onDelete: { deleteView($0) },
+                        onClose: { showViews = false }
+                    )
+                }
+            }
+            SideDrawer(edge: .trailing, isOpen: $showFilters) {
+                BrowseFilterPanel(
+                    selection: $vm.selection, facets: vm.facets,
+                    onChange: { reload() },
+                    onClose: { showFilters = false },
+                    isLocal: vm.isLocal
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var page: some View {
         Group {
             ZStack {
                 Theme.Colors.appBackground.ignoresSafeArea()
@@ -75,19 +111,6 @@ struct RedesignedBrowseView: View {
                             onTap: { reauthAccount = $0 }
                         )
                         searchPill
-                        if isRoot && !vm.isLocal {
-                            SavedViewsBar(
-                                views: views,
-                                activeID: activeViewID,
-                                canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
-                                onOpen: { open($0) },
-                                onSave: {
-                                    newViewName = ""
-                                    showSaveView = true
-                                }
-                            )
-                            .padding(.bottom, 10)
-                        }
                         ActiveFilterPills(
                             selection: $vm.selection, facets: vm.facets,
                             onChange: { reload() }
@@ -100,6 +123,11 @@ struct RedesignedBrowseView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(isRoot ? .hidden : .visible, for: .navigationBar)
+            // Only on the root. Inside a pushed screen a drag from the left
+            // edge is the system's back gesture, which is worth more than a
+            // shortcut to a panel that has a button anyway.
+            .drawerEdges(leading: $showViews, trailing: $showFilters,
+                         enabled: isRoot && !showViews && !showFilters)
             // Keyed on being on screen, so the first visit loads and a visit
             // after a cancelled attempt tries again instead of leaving an empty
             // shelf up for the rest of the session.
@@ -136,14 +164,6 @@ struct RedesignedBrowseView: View {
             }
             .onChange(of: vm.sort) { _, _ in reload() }
             .onChange(of: openBookID.wrappedValue) { _, _ in pushScannedBook() }
-            .sheet(isPresented: $showFilters) {
-                BrowseFilterSheet(
-                    selection: $vm.selection, facets: vm.facets,
-                    onChange: { reload() },
-                    isLocal: vm.isLocal
-                )
-                .presentationDetents([.large])
-            }
             .sheet(isPresented: $showSearch) {
                 RedesignedSearchView()
             }
@@ -194,6 +214,7 @@ struct RedesignedBrowseView: View {
             // every visit; the surfaces you cross to occasionally go behind
             // the overflow, which is where the web page puts them too.
             if isRoot { moreMenu }
+            if isRoot && !vm.isLocal { viewsButton }
             if !vm.isLocal { groupButton }
             sortMenu
             filterButton
@@ -224,6 +245,25 @@ struct RedesignedBrowseView: View {
         let count = vm.selection.grouped ? vm.bookTotal : vm.total
         if count == 0 { return "No books" }
         return "\(count.formatted()) book\(count == 1 ? "" : "s")"
+    }
+
+    /// A button as well as a swipe. A gesture nobody is told about is a feature
+    /// nobody finds.
+    @ViewBuilder
+    private var viewsButton: some View {
+        Button { showViews = true } label: {
+            Image(systemName: "sidebar.leading")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(activeViewID == nil ? Theme.Colors.appText2 : Theme.Colors.accentStrong)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(activeViewID == nil
+                                          ? Color.white.opacity(0.06) : Theme.Colors.accentSoft))
+                .overlay(Circle().stroke(activeViewID == nil
+                                         ? Theme.Colors.appLine : Color.clear, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Views")
+        .padding(.bottom, 4)
     }
 
     @ViewBuilder
@@ -554,6 +594,15 @@ struct RedesignedBrowseView: View {
     /// Views live on one server. With several accounts the primary one is
     /// where a new view goes, matching every other global preference in the
     /// app rather than inventing a picker for it.
+    @discardableResult
+    private func deleteView(_ view: SavedList) {
+        Task {
+            guard let client = appState.makeServerClient() else { return }
+            try? await ListService(client: client).deleteView(id: view.id)
+            await loadViews()
+        }
+    }
+
     @discardableResult
     private func loadViews() async -> [SavedList] {
         guard let client = appState.makeServerClient() else { return [] }
