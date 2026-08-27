@@ -539,20 +539,28 @@ struct RedesignedScanResultView: View {
     @State private var showMediaTypeSheet = false
     @State private var moreOpen = false
 
-    private let formats: [(id: String, label: String)] = [
-        ("paperback", "Paperback"),
-        ("hardcover", "Hardcover"),
-        ("ebook", "E-book"),
-        ("audiobook", "Audiobook")
-    ]
+    /// Read from the server rather than written out here. The hardcoded list
+    /// was already two short — the vocabulary has `comic` and `box_set` — and a
+    /// copy of a controlled list is a copy that drifts the next time one is
+    /// added.
+    @State private var formatsByServer: [String: [VocabularyTerm]] = [:]
+
+    private var formats: [VocabularyTerm] {
+        guard let library = currentLibrary else { return EditionFormatLabels.fallback }
+        return formatsByServer[library.serverURL] ?? EditionFormatLabels.fallback
+    }
 
     private enum ReadStatus: Hashable {
-        case unread, reading, read
+        // Want-to-read is the one that matters standing in a shop: the book is
+        // in your hand, you are not buying it today, and the scanner is the
+        // only place that can record it before you put it back.
+        case unread, wantToRead, reading, read
         var apiValue: String {
             switch self {
-            case .unread:  return "unread"
-            case .reading: return "reading"
-            case .read:    return "read"
+            case .unread:     return "unread"
+            case .wantToRead: return "want_to_read"
+            case .reading:    return "reading"
+            case .read:       return "read"
             }
         }
     }
@@ -616,9 +624,12 @@ struct RedesignedScanResultView: View {
     /// Triggered on first lookup and whenever the user switches library.
     /// Cache media types per server so re-selecting a library on the
     /// same server doesn't re-hit the network.
+    private var currentLibrary: Library? {
+        libraries.first(where: { $0.clientKey == selectedLibraryKey }) ?? libraries.first
+    }
+
     private func loadLibraryDependentMetadata() async {
-        guard let library = libraries.first(where: { $0.clientKey == selectedLibraryKey })
-            ?? libraries.first else {
+        guard let library = currentLibrary else {
             print("📕 [Scan] metadata skipped: no library (\(libraries.count) loaded, key=\(selectedLibraryKey ?? "nil"))")
             return
         }
@@ -671,6 +682,12 @@ struct RedesignedScanResultView: View {
         } else if selectedMediaTypeID == nil,
                   let types = mediaTypesByServer[library.serverURL] {
             selectedMediaTypeID = guessMediaTypeID(for: lookup, types: types)
+        }
+
+        if formatsByServer[library.serverURL] == nil,
+           let terms = try? await VocabularyService(client: client).editionFormats(),
+           !terms.isEmpty {
+            formatsByServer[library.serverURL] = terms.sorted { $0.sortOrder < $1.sortOrder }
         }
 
         // Tags are per-library — always re-fetch on library change.
@@ -1013,9 +1030,10 @@ struct RedesignedScanResultView: View {
                 .tracking(1.2)
                 .foregroundStyle(Theme.Colors.appText3)
             HStack(spacing: 0) {
-                statusSegment(.unread,  icon: "circle",        label: "Unread")
-                statusSegment(.reading, icon: "book.fill",     label: "Reading")
-                statusSegment(.read,    icon: "checkmark",     label: "Read")
+                statusSegment(.unread,     icon: "circle",        label: "Unread")
+                statusSegment(.wantToRead, icon: "bookmark",     label: "Want")
+                statusSegment(.reading,    icon: "book.fill",     label: "Reading")
+                statusSegment(.read,       icon: "checkmark",     label: "Read")
             }
             .padding(2)
             .background(
@@ -1101,7 +1119,7 @@ struct RedesignedScanResultView: View {
     }
 
     private var moreSummary: String {
-        let formatLabel = formats.first(where: { $0.id == selectedFormat })?.label ?? selectedFormat
+        let formatLabel = EditionFormatLabels.label(selectedFormat)
         let tagBit = selectedTagIDs.isEmpty ? "no tags" : "\(selectedTagIDs.count) tag\(selectedTagIDs.count == 1 ? "" : "s")"
         return "\(formatLabel) · \(tagBit)"
     }
@@ -1112,10 +1130,13 @@ struct RedesignedScanResultView: View {
             Text("Format")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Theme.Colors.appText2)
-            HStack(spacing: 8) {
-                ForEach(formats, id: \.id) { f in
-                    chipButton(label: f.label, active: selectedFormat == f.id) {
-                        selectedFormat = f.id
+            // Wraps. Six formats do not fit across a phone in one row, and the
+            // hardcoded four did, which is why this was an HStack.
+            FlowRow(spacing: 8) {
+                ForEach(formats) { f in
+                    chipButton(label: EditionFormatLabels.label(f.code),
+                               active: selectedFormat == f.code) {
+                        selectedFormat = f.code
                     }
                 }
             }

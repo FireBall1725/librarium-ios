@@ -146,6 +146,11 @@ struct RedesignedBrowseView: View {
                 }
                 await loadLibraries()
                 await vm.load(appState: appState, local: localBrowse)
+                // Also here, not only on change. Switching collections rebuilds
+                // this whole view, so a book the scanner asked for before the
+                // switch was already set by the time the new view appeared and
+                // its onChange never fired.
+                pushScannedBook()
             }
             .refreshable {
                 await loadLibraries()
@@ -568,12 +573,29 @@ struct RedesignedBrowseView: View {
         openBookID.wrappedValue = nil
         Task {
             await loadLibraries()
-            for library in libraries.values {
-                let client = appState.makeClient(serverURL: library.serverURL)
-                if let book = try? await BookService(client: client).get(bookId: bookID) {
-                    selected = BookOpenRequest(book: book, library: library)
-                    return
+
+            // A Lite collection has no route to ask; the book is already on the
+            // device, and the cache is keyed by the account's synthetic URL.
+            if let source = appState.activeSource, !source.isServerBacked {
+                let cache = BookCache(modelContainer: modelContext.container)
+                for library in libraries.values {
+                    if let book = cache.book(serverURL: source.url,
+                                             libraryId: library.id, bookId: bookID) {
+                        selected = BookOpenRequest(book: book, library: library)
+                        return
+                    }
                 }
+                return
+            }
+
+            guard let library = libraries.values.first else { return }
+            let client = appState.makeClient(serverURL: library.serverURL)
+            // By work, not per library: the scanner answers with a book, and
+            // which of this collection's libraries holds it is the detail
+            // page's problem rather than a reason to ask each one in turn.
+            if let book = try? await BookService(client: client).get(bookId: bookID) {
+                let owning = book.libraryId.isEmpty ? library : (libraries[book.libraryId] ?? library)
+                selected = BookOpenRequest(book: book, library: owning)
             }
         }
     }

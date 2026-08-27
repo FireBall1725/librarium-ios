@@ -155,6 +155,45 @@ final class SeriesBrowseTests: XCTestCase {
         XCTAssertTrue(try loan(due: "2020-01-01T12:30:00Z").isOverdue)
     }
 
+    // MARK: - Vocabularies
+
+    func testEditionFormatsComeFromTheServer() throws {
+        // The list was written out in the scan flow and was already two short:
+        // the vocabulary has comic and box_set. A copy of a controlled list is
+        // a copy that drifts the next time somebody adds to it.
+        let json = Data("""
+        {"items":[{"code":"paperback","sort_order":10,"is_active":true},
+                  {"code":"box_set","sort_order":60,"is_active":true},
+                  {"code":"vhs","sort_order":70,"is_active":false}]}
+        """.utf8)
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let page = try d.decode(VocabularyPage.self, from: json)
+
+        XCTAssertEqual(page.items.count, 3)
+        // A retired format is still sent, and must not be offered.
+        XCTAssertEqual(page.items.filter(\.isActive).map(\.code), ["paperback", "box_set"])
+    }
+
+    func testAFormatWithNoFlagIsActive() throws {
+        // A server that does not send the flag is not saying every format is
+        // retired.
+        let json = Data("""
+        {"items":[{"code":"paperback"}]}
+        """.utf8)
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let page = try d.decode(VocabularyPage.self, from: json)
+        XCTAssertTrue(page.items.first?.isActive == true)
+    }
+
+    func testFormatCodesGetReadableLabels() {
+        XCTAssertEqual(EditionFormatLabels.label("box_set"), "Box set")
+        XCTAssertEqual(EditionFormatLabels.label("ebook"), "E-book")
+        // An unknown code still reads as words rather than a slug.
+        XCTAssertEqual(EditionFormatLabels.label("graphic_novel"), "Graphic Novel")
+    }
+
     // MARK: - Sync
 
     func testNothingToSyncDecodes() throws {

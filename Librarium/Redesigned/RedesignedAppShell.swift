@@ -116,12 +116,18 @@ struct RedesignedAppShell: View {
         .fullScreenCover(isPresented: $showScan) {
             RedesignedScanFlow(
                 onClose: { showScan = false },
-                onOpenBook: { _, bookID in
-                    // Close the scanner and let the books grid push the detail
-                    // once it has the book. The library it came from is no
-                    // longer needed: the grid can fetch a book by work and the
-                    // scanner's answer is a book, not a shelf.
+                onOpenBook: { library, bookID in
+                    // Scanning is the one thing that asks every collection at
+                    // once, so the answer can be in one the reader does not
+                    // currently have open. Opening it moves them there rather
+                    // than pushing a book the surfaces cannot see: without
+                    // this, a match on the server while the Lite collection was
+                    // open simply never loaded.
                     showScan = false
+                    if let account = appState.accounts.first(where: { $0.url == library.serverURL }),
+                       appState.activeSource?.id != account.id {
+                        appState.setActiveSource(id: account.id)
+                    }
                     pendingOpenBookID = bookID
                     selectedTab = .books
                 }
