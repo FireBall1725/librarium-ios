@@ -292,6 +292,49 @@ struct BrowseSelection: Equatable {
         contributors = []
     }
 
+    init() {}
+
+    /// Rebuilds a selection from a stored view's query string.
+    ///
+    /// The reverse of `queryItems()`, and it has to stay the reverse: a view
+    /// saved on the web and opened here has to select what its author picked,
+    /// or the name on the row promises something the list does not deliver.
+    init(query string: String) {
+        self.init()
+        var comps = URLComponents()
+        comps.percentEncodedQuery = string
+        let items = comps.queryItems ?? []
+        // Only when the string says so. A saved view with no ownership in it
+        // meant every state on the web, and defaulting to the shelf here would
+        // quietly drop the wishlist and the gaps its author was looking at.
+        values = [:]
+        let byParam = Dictionary(uniqueKeysWithValues: BrowseFacet.allCases.map { ($0.apiParam, $0) })
+        for item in items {
+            let parts = (item.value ?? "")
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            switch item.name {
+            case "q":
+                query = item.value ?? ""
+            case "contributor":
+                contributors = Set(parts)
+            default:
+                guard let facet = byParam[item.name], !parts.isEmpty else { continue }
+                self[facet] = Set(parts)
+            }
+        }
+    }
+
+    /// The query string a view stores, which is the same string the requests
+    /// carry. One spelling, so saving what is on screen and reopening it later
+    /// cannot drift apart.
+    func queryString() -> String {
+        var comps = URLComponents()
+        comps.queryItems = queryItems()
+        return comps.percentEncodedQuery ?? ""
+    }
+
     func queryItems() -> [URLQueryItem] {
         var items: [URLQueryItem] = []
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)

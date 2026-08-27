@@ -20,6 +20,9 @@ struct RedesignedSeriesListView: View {
     @State private var selectedSeries: SeriesListEntry?
     @State private var showFilters = false
     @State private var searchTask: Task<Void, Never>?
+    @State private var views: [SavedList] = []
+    @State private var showSaveView = false
+    @State private var newViewName = ""
 
     var body: some View {
         NavigationStack {
@@ -30,6 +33,17 @@ struct RedesignedSeriesListView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         header
                         searchPill
+                        SavedViewsBar(
+                            views: views,
+                            activeID: activeViewID,
+                            canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
+                            onOpen: { open($0) },
+                            onSave: {
+                                newViewName = ""
+                                showSaveView = true
+                            }
+                        )
+                        .padding(.bottom, 10)
                         SeriesFilterPills(
                             selection: $vm.selection, facets: vm.facets,
                             onChange: { reload() }
@@ -43,6 +57,10 @@ struct RedesignedSeriesListView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .task(id: appState.accounts.map(\.id)) {
+                await loadViews()
+                if let fallback = views.first(where: { $0.isDefault }), vm.entries.isEmpty {
+                    vm.selection = SeriesSelection(query: fallback.filterQuery)
+                }
                 await vm.load(appState: appState, modelContainer: modelContext.container)
             }
             .refreshable {
@@ -50,6 +68,9 @@ struct RedesignedSeriesListView: View {
             }
             .navigationDestination(item: $selectedSeries) { entry in
                 RedesignedSeriesDetailView(library: entry.library, series: entry.series)
+            }
+            .sheet(isPresented: $showSaveView) {
+                SaveViewSheet(name: $newViewName) { saveView() }
             }
             .sheet(isPresented: $showFilters) {
                 SeriesFilterSheet(
@@ -146,6 +167,35 @@ struct RedesignedSeriesListView: View {
     private func reload() {
         searchTask?.cancel()
         Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
+    }
+
+    /// Matched on the query string rather than on which chip was tapped, so
+    /// changing a filter after opening a view unticks it honestly.
+    private var activeViewID: String? {
+        let current = vm.selection.queryString()
+        return views.first(where: { $0.filterQuery == current })?.id
+    }
+
+    private func open(_ view: SavedList) {
+        vm.selection = SeriesSelection(query: view.filterQuery)
+        reload()
+    }
+
+    private func loadViews() async {
+        let client = appState.makePrimaryClient()
+        views = (try? await ListService(client: client).savedViews(surface: "series")) ?? []
+    }
+
+    private func saveView() {
+        let name = newViewName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let query = vm.selection.queryString()
+        Task {
+            let client = appState.makePrimaryClient()
+            try? await ListService(client: client)
+                .saveView(name: name, surface: "series", query: query)
+            await loadViews()
+        }
     }
 
     @ViewBuilder

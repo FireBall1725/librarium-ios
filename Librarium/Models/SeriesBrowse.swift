@@ -179,6 +179,35 @@ struct SeriesSelection: Equatable {
         incompleteOnly = false
     }
 
+    init() {}
+
+    /// Rebuilds a selection from a stored view's query string, the reverse of
+    /// `queryItems()`.
+    init(query string: String) {
+        self.init()
+        var comps = URLComponents()
+        comps.percentEncodedQuery = string
+        let byParam = Dictionary(uniqueKeysWithValues: SeriesFacet.allCases.map { ($0.apiParam, $0) })
+        for item in comps.queryItems ?? [] {
+            let parts = (item.value ?? "")
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if item.name == "q" {
+                query = item.value ?? ""
+                continue
+            }
+            guard let facet = byParam[item.name], !parts.isEmpty else { continue }
+            self[facet] = Set(parts)
+        }
+    }
+
+    func queryString() -> String {
+        var comps = URLComponents()
+        comps.queryItems = queryItems()
+        return comps.percentEncodedQuery ?? ""
+    }
+
     func queryItems() -> [URLQueryItem] {
         var items: [URLQueryItem] = []
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
