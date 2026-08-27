@@ -524,6 +524,10 @@ struct RedesignedScanResultView: View {
     /// so users can pick "manga" / "comic book" / etc. instead of
     /// accepting whatever the lookup defaulted to. Keyed by server URL.
     @State private var mediaTypesByServer: [String: [MediaType]] = [:]
+    /// Why the media types are not on screen, when they are not. "Loading…"
+    /// forever is what a swallowed failure looks like, and it is unfalsifiable:
+    /// nothing on the screen says whether it is still trying.
+    @State private var mediaTypesError: String?
     @State private var selectedMediaTypeID: String?
     /// Library tags loaded for the currently-selected library. The user
     /// taps to toggle membership; the IDs ride along on the create.
@@ -614,7 +618,12 @@ struct RedesignedScanResultView: View {
     /// same server doesn't re-hit the network.
     private func loadLibraryDependentMetadata() async {
         guard let library = libraries.first(where: { $0.clientKey == selectedLibraryKey })
-            ?? libraries.first else { return }
+            ?? libraries.first else {
+            print("📕 [Scan] metadata skipped: no library (\(libraries.count) loaded, key=\(selectedLibraryKey ?? "nil"))")
+            return
+        }
+
+        print("📕 [Scan] metadata for \(library.name) @ \(library.serverURL)")
 
         // Lite libraries don't have a server-side media type catalog.
         // Seed a small hardcoded list so the picker has options and
@@ -645,14 +654,19 @@ struct RedesignedScanResultView: View {
         let client = appState.makeClient(serverURL: library.serverURL)
 
         if mediaTypesByServer[library.serverURL] == nil {
-            if let types = try? await MediaTypeService(client: client).list() {
+            do {
+                let types = try await MediaTypeService(client: client).list()
                 mediaTypesByServer[library.serverURL] = types
+                mediaTypesError = types.isEmpty ? "This server has no media types" : nil
                 // Pick a sensible default — prefer the lookup's hint
                 // ("manga"/"comic"/etc) when the api emits one in the
                 // categories array; otherwise leave the user to pick.
                 if selectedMediaTypeID == nil {
                     selectedMediaTypeID = guessMediaTypeID(for: lookup, types: types)
                 }
+            } catch {
+                mediaTypesError = error.localizedDescription
+                print("🔴 [Scan] media types failed for \(library.serverURL): \(error)")
             }
         } else if selectedMediaTypeID == nil,
                   let types = mediaTypesByServer[library.serverURL] {
@@ -955,9 +969,10 @@ struct RedesignedScanResultView: View {
                 .foregroundStyle(Theme.Colors.appText3)
             Button { showMediaTypeSheet = true } label: {
                 HStack(spacing: 6) {
-                    Text(currentMediaTypeName ?? "Loading…")
+                    Text(currentMediaTypeName ?? mediaTypePlaceholder)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.Colors.appText)
+                        .foregroundStyle(currentMediaTypeName == nil
+                                         ? Theme.Colors.appText3 : Theme.Colors.appText)
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 10, weight: .bold))
@@ -975,6 +990,14 @@ struct RedesignedScanResultView: View {
             .buttonStyle(.plain)
             .disabled(currentMediaTypes.isEmpty)
         }
+    }
+
+    /// What the chip says when nothing is selected. Three different states hid
+    /// behind one word before: still fetching, fetched nothing, and failed.
+    private var mediaTypePlaceholder: String {
+        if mediaTypesError != nil { return "Unavailable — tap to retry" }
+        if currentMediaTypes.isEmpty { return "Loading…" }
+        return "Choose"
     }
 
     private var currentMediaTypeName: String? {
@@ -1508,21 +1531,15 @@ struct RedesignedScanResultView: View {
 
         do {
             let book = try await BookService(client: client).create(libraryId: library.id, body: body)
-            // If the user picked Reading or Read, set status on the
-            // primary edition's interaction.
-            if selectedStatus != .unread,
-               let edition = (try? await BookService(client: client).editions(libraryId: library.id, bookId: book.id))?.first {
-                let upd = UpdateInteractionRequest(
-                    readStatus: selectedStatus.apiValue,
-                    rating: nil,
-                    notes: "",
-                    review: "",
-                    dateStarted: nil,
-                    dateFinished: nil,
-                    isFavorite: false
-                )
+            // Reading state belongs to the work, not to a printing. This
+            // wrote through the old per-edition route, which also meant a
+            // round trip to fetch an edition id purely to address something
+            // that is not keyed on editions any more: marking a scan as Read
+            // wrote where nothing reads from.
+            if selectedStatus != .unread {
                 _ = try? await BookService(client: client)
-                    .updateInteraction(libraryId: library.id, bookId: book.id, editionId: edition.id, body: upd)
+                    .updateMyBook(bookId: book.id,
+                                  body: UpdateMyBookRequest(readStatus: selectedStatus.apiValue))
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             addedSuccess = true
