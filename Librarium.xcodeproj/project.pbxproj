@@ -529,7 +529,7 @@
 			repositoryURL = "https://github.com/TelemetryDeck/SwiftSDK";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 2.13.0;
+				minimumVersion = 2.14.2;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
