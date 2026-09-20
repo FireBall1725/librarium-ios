@@ -5,6 +5,13 @@ struct BookService {
 
     // MARK: - Books
 
+    /// One library's books, asked for through the person-scoped list.
+    ///
+    /// `/libraries/{id}/books` is the read path the tier API retires: the
+    /// server answers the same question from `/me/books` narrowed by `lib`,
+    /// and it narrows by intersection with what the caller can actually read.
+    /// Every filter this takes is parsed by the same code on the server, so
+    /// the two answers match (librarium-ios-011).
     func list(
         libraryId: String,
         query: String = "",
@@ -12,11 +19,10 @@ struct BookService {
         perPage: Int = 25,
         tag: String = "",
         typeFilter: String = "",
-        letter: String = "",
         sort: String = "",
         sortDir: String = ""
     ) async throws -> Paged<Book> {
-        var path = "/api/v1/libraries/\(libraryId)/books?page=\(page)&per_page=\(perPage)"
+        var path = "/api/v1/me/books?lib=\(libraryId)&page=\(page)&per_page=\(perPage)"
         if !query.isEmpty, let enc = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
             path += "&q=\(enc)"
         }
@@ -26,12 +32,15 @@ struct BookService {
         if !typeFilter.isEmpty, let enc = typeFilter.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
             path += "&type_filter=\(enc)"
         }
-        if !letter.isEmpty, let enc = letter.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            path += "&letter=\(enc)"
-        }
         if !sort.isEmpty { path += "&sort=\(sort)" }
         if !sortDir.isEmpty { path += "&sort_dir=\(sortDir)" }
-        return try await client.get(path)
+        do {
+            return try await client.get(path)
+        } catch APIError.notFound {
+            // A server too old for this route reads as an empty library
+            // otherwise, which is the failure #77 was about.
+            throw MeBrowseError.serverTooOld(server: client.baseURL)
+        }
     }
 
     func get(libraryId: String, bookId: String) async throws -> Book {
@@ -45,10 +54,6 @@ struct BookService {
     /// what is missing.
     func get(bookId: String) async throws -> Book {
         try await client.get("/api/v1/books/\(bookId)")
-    }
-
-    func letters(libraryId: String) async throws -> [String] {
-        try await client.get("/api/v1/libraries/\(libraryId)/books/letters")
     }
 
     func fingerprint(libraryId: String) async throws -> BookFingerprint {

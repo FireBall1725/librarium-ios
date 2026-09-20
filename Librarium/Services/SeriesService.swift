@@ -3,8 +3,20 @@ import Foundation
 struct SeriesService {
     let client: APIClient
 
+    /// One library's runs, asked for through the person-scoped index.
+    ///
+    /// `/libraries/{id}/series` is a read path the tier API retires, so this
+    /// narrows the index by `lib` instead (librarium-ios-011). `volumes=1` is
+    /// the smallest strip the endpoint will build: the callers here cache the
+    /// run or match its name, and neither draws a cover.
     func list(libraryId: String) async throws -> [Series] {
-        try await client.get("/api/v1/libraries/\(libraryId)/series")
+        do {
+            let page: SeriesIndexPage =
+                try await client.get("/api/v1/me/series/index?lib=\(libraryId)&volumes=1")
+            return page.items
+        } catch APIError.notFound {
+            throw MeBrowseError.serverTooOld(server: client.baseURL)
+        }
     }
 
     func get(libraryId: String, seriesId: String) async throws -> Series {

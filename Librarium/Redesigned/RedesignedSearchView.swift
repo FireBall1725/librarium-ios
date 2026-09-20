@@ -6,9 +6,9 @@ import SwiftUI
 
 /// Redesigned Search — mockup card #10.
 ///
-/// Cross-type search across the primary account: books (server-side
-/// fuzzy via existing list endpoint), series (client-side filter on the
-/// per-library list), and contributors (server-wide search endpoint).
+/// Cross-type search across the primary account: books, series and
+/// contributors, each answered by one request to the server rather than
+/// one per library.
 /// Results are rendered as a single mixed list with a segmented control
 /// at the top to filter by type, plus per-segment counts.
 ///
@@ -679,8 +679,8 @@ final class RedesignedSearchViewModel {
                         )
                         return PerAccountSearch(books: offlineBooks, series: [], contributors: [])
                     }
-                    async let books = Self.fanOutBooks(client: client, libraries: libraries, query: trimmed)
-                    async let series = Self.fanOutSeries(client: client, libraries: libraries, query: trimmed)
+                    async let books = Self.searchBooks(client: client, libraries: libraries, query: trimmed)
+                    async let series = Self.searchSeries(client: client, libraries: libraries, query: trimmed)
                     async let contribs = Self.searchContributors(client: client, query: trimmed)
                     return PerAccountSearch(
                         books: (try? await books) ?? [],
@@ -701,27 +701,30 @@ final class RedesignedSearchViewModel {
         contributorResults = allContribs
     }
 
-    private static func fanOutBooks(client: APIClient, libraries: [Library], query: String) async throws -> [BookSearchResult] {
-        // 100 per library covers typical "all volumes of a long-running
-        // series" queries without needing a paginated infinite-scroll on
-        // the search screen. If a single query genuinely exceeds 100
-        // matches in one library, we'd want a "show more" affordance —
-        // tracked for a later pass.
+    private static func searchBooks(client: APIClient, libraries: [Library], query: String) async throws -> [BookSearchResult] {
+        // One request for the account, where this used to ask every library
+        // separately: the request count grew with the collection and each
+        // library got the same allowance whether it held 1,400 books or 1
+        // (librarium-ios-011).
+        //
+        // 100 results covers typical "all volumes of a long-running series"
+        // queries without needing infinite scroll on the search screen.
+        var selection = BrowseSelection()
+        // No ownership filter: search should find a book on the wishlist as
+        // readily as one on the shelf.
+        selection.values = [:]
+        selection.query = query
+        let page = try await MeBrowseService(client: client)
+            .books(selection: selection, sort: .titleAsc, page: 1, perPage: 100)
+
+        // A book whose library the caller only reaches through a shared list
+        // arrives without one; any library on the same server keeps its covers
+        // pointed at the right host rather than dropping the row.
+        let byID = Dictionary(uniqueKeysWithValues: libraries.map { ($0.id, $0) })
         var out: [BookSearchResult] = []
-        try await withThrowingTaskGroup(of: (Library, [Book]).self) { group in
-            for lib in libraries {
-                group.addTask {
-                    let page = try await BookService(client: client).list(
-                        libraryId: lib.id, query: query, page: 1, perPage: 100,
-                        tag: "", typeFilter: "", letter: "",
-                        sort: "title", sortDir: "asc"
-                    )
-                    return (lib, page.items)
-                }
-            }
-            for try await (lib, books) in group {
-                out.append(contentsOf: books.map { BookSearchResult(book: $0, library: lib) })
-            }
+        for book in page.items {
+            guard let lib = byID[book.libraryId] ?? libraries.first else { continue }
+            out.append(BookSearchResult(book: book, library: lib))
         }
         return out.sorted { $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending }
     }
@@ -860,23 +863,20 @@ final class RedesignedSearchViewModel {
             }
     }
 
-    private static func fanOutSeries(client: APIClient, libraries: [Library], query: String) async throws -> [SeriesSearchResult] {
-        // Series doesn't have a server-side `?q=`, so pull each library's
-        // full list and filter client-side. The lists are small (typically
-        // <100) so this is fine for v1.
-        let q = query.lowercased()
+    private static func searchSeries(client: APIClient, libraries: [Library], query: String) async throws -> [SeriesSearchResult] {
+        // The index matches the name on the server, so this asks once for the
+        // account and takes the answer. It used to pull every library's whole
+        // list and filter in Swift, which meant downloading the collection to
+        // find one run (librarium-ios-011).
+        var selection = SeriesSelection()
+        selection.query = query
+        let page = try await MeBrowseService(client: client).series(selection: selection, sort: .name)
+
+        let byID = Dictionary(uniqueKeysWithValues: libraries.map { ($0.id, $0) })
         var out: [SeriesSearchResult] = []
-        try await withThrowingTaskGroup(of: (Library, [Series]).self) { group in
-            for lib in libraries {
-                group.addTask {
-                    let s = (try? await SeriesService(client: client).list(libraryId: lib.id)) ?? []
-                    return (lib, s)
-                }
-            }
-            for try await (lib, allSeries) in group {
-                let matches = allSeries.filter { $0.name.lowercased().contains(q) }
-                out.append(contentsOf: matches.map { SeriesSearchResult(series: $0, library: lib) })
-            }
+        for series in page.items {
+            guard let lib = byID[series.libraryId] ?? libraries.first else { continue }
+            out.append(SeriesSearchResult(series: series, library: lib))
         }
         return out.sorted { $0.series.name.localizedStandardCompare($1.series.name) == .orderedAscending }
     }

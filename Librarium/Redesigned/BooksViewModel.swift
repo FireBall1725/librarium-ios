@@ -51,15 +51,13 @@ final class BooksViewModel {
     var searchText = ""
     var selectedTag: Tag?
     var selectedMediaType: MediaType?
-    var selectedLetter: String?
     var sortOption: BookSortOption = .titleAsc
     var availableTags: [Tag] = []
     var availableMediaTypes: [MediaType] = []
-    var availableLetters: Set<String> = []
 
     var hasMore: Bool { books.count < total }
     var hasActiveFilters: Bool {
-        !searchText.isEmpty || selectedTag != nil || selectedMediaType != nil || selectedLetter != nil
+        !searchText.isEmpty || selectedTag != nil || selectedMediaType != nil
     }
 
     func load(client: APIClient, libraryId: String) async {
@@ -73,7 +71,6 @@ final class BooksViewModel {
             let paged = try await BookService(client: client).list(
                 libraryId: libraryId, query: searchText, page: 1, perPage: perPage,
                 tag: selectedTag?.name ?? "", typeFilter: selectedMediaType?.name ?? "",
-                letter: selectedLetter ?? "",
                 sort: sortOption.field, sortDir: sortOption.dir)
             books = paged.items; total = paged.total
             isLoading = false
@@ -88,14 +85,12 @@ final class BooksViewModel {
     }
 
     func loadMetadata(client: APIClient, libraryId: String) async {
-        let letters = Task { () -> [String]? in try? await BookService(client: client).letters(libraryId: libraryId) }
         let tags    = Task { () -> [Tag]?    in try? await TagService(client: client).list(libraryId: libraryId) }
         let types   = Task { () -> Result<[MediaType], Error> in
             do { return .success(try await MediaTypeService(client: client).list()) }
             catch { return .failure(error) }
         }
 
-        if let result = await letters.value, availableLetters.isEmpty { availableLetters = Set(result) }
         if let result = await tags.value, availableTags.isEmpty { availableTags = result }
         switch await types.value {
         case .success(let result):
@@ -115,7 +110,6 @@ final class BooksViewModel {
             let paged = try await BookService(client: client).list(
                 libraryId: libraryId, query: searchText, page: page, perPage: perPage,
                 tag: selectedTag?.name ?? "", typeFilter: selectedMediaType?.name ?? "",
-                letter: selectedLetter ?? "",
                 sort: sortOption.field, sortDir: sortOption.dir)
             books.append(contentsOf: paged.items); total = paged.total
         } catch {
@@ -131,7 +125,6 @@ final class BooksViewModel {
             let paged = try await BookService(client: client).list(
                 libraryId: libraryId, query: searchText, page: 1, perPage: perPage,
                 tag: selectedTag?.name ?? "", typeFilter: selectedMediaType?.name ?? "",
-                letter: selectedLetter ?? "",
                 sort: sortOption.field, sortDir: sortOption.dir)
             books = paged.items; total = paged.total
         } catch {
