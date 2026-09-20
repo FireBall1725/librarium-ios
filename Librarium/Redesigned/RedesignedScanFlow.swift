@@ -58,11 +58,13 @@ struct RedesignedScanFlow: View {
             }
         }
         .sheet(isPresented: $showManualEntry) {
-            ManualISBNEntrySheet { isbn in
+            ManualEntrySheet { isbn in
                 showManualEntry = false
                 phase = .result(isbn: normalize(isbn: isbn))
             }
-            .presentationDetents([.height(280)])
+            // Full height: a title search lists what the providers have,
+            // and a short sheet puts those rows under the keyboard.
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
     }
@@ -257,8 +259,9 @@ struct RedesignedScanCameraView: View {
     }
 
     /// Manual entry escape hatch when the camera can't pick up the
-    /// barcode (worn label, awkward angle, weird format). Opens a small
-    /// sheet that takes an ISBN and feeds the same `onScan` path.
+    /// barcode (worn label, awkward angle, weird format) or there is no
+    /// barcode at all. Opens a sheet that takes an ISBN or a title and
+    /// feeds the same `onScan` path.
     @ViewBuilder
     private var manualEntryButton: some View {
         Button {
@@ -267,7 +270,7 @@ struct RedesignedScanCameraView: View {
             HStack(spacing: 8) {
                 Image(systemName: "keyboard")
                     .font(.system(size: 13, weight: .semibold))
-                Text("Enter ISBN manually")
+                Text("Enter ISBN or title")
                     .font(.system(size: 13, weight: .semibold))
             }
             .foregroundStyle(.white)
@@ -298,79 +301,269 @@ struct RedesignedScanCameraView: View {
     }
 }
 
-// MARK: - Manual ISBN entry
+// MARK: - Manual entry and title search
 
-/// Small sheet for typing an ISBN when the scanner can't pick it up.
-/// Single field + Look up button; the parent flow drives lookup via
-/// the same handler that scanned barcodes use.
-private struct ManualISBNEntrySheet: View {
+/// Typing a way in when the camera can't: an ISBN, or a title.
+///
+/// A worn or missing barcode was the only case this covered, which left
+/// "I know what the book is, I just can't scan it" with nowhere to go
+/// (librarium-ios #53). One field takes both — ten or thirteen digits go
+/// straight to lookup, anything else asks the metadata sources and lists
+/// what they have, and picking a row hands its ISBN to the same screen a
+/// scan opens.
+private struct ManualEntrySheet: View {
     let onSubmit: (String) -> Void
 
+    @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
-    @State private var isbn: String = ""
+    @State private var text: String = ""
+    @State private var results: [ISBNLookupResult] = []
+    @State private var searching = false
+    /// Set once a search has answered, so "nothing found" is only shown
+    /// after something was actually asked.
+    @State private var searched = false
+    @State private var searchError: String?
+    @State private var searchTask: Task<Void, Never>?
     @FocusState private var focused: Bool
 
     var body: some View {
         ZStack {
             Theme.Colors.appBackground.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 14) {
-                Text("Enter ISBN")
+                Text("Find a book")
                     .font(Theme.Fonts.heroTitle)
                     .foregroundStyle(Theme.Colors.appText)
                     .padding(.top, 8)
-                Text("10 or 13 digits — useful when the barcode is worn or the camera can't lock onto it.")
+                Text("An ISBN, 10 or 13 digits — or a title, when the barcode is worn or the book never had one.")
                     .font(Theme.Fonts.ui(13, weight: .medium))
                     .foregroundStyle(Theme.Colors.appText3)
 
-                TextField("ISBN", text: $isbn)
-                    .keyboardType(.numberPad)
-                    .textContentType(.none)
-                    .autocorrectionDisabled()
-                    .focused($focused)
-                    .font(Theme.Fonts.mono(18, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.appText)
-                    .tint(Theme.Colors.accent)
-                    .padding(14)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.Colors.appLine, lineWidth: 0.5))
-                    .padding(.top, 4)
-
-                HStack {
-                    Spacer()
-                    Button("Cancel") { dismiss() }
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.Colors.appText2)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                    Button {
-                        let normalized = isbn.filter { $0.isNumber || $0 == "X" || $0 == "x" }.uppercased()
-                        guard normalized.count == 10 || normalized.count == 13 else { return }
-                        onSubmit(normalized)
-                    } label: {
-                        Text("Look up")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .background(
-                                Capsule().fill(LinearGradient(
-                                    colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
-                                    startPoint: .topLeading, endPoint: .bottomTrailing
-                                ))
-                            )
-                    }
-                    .disabled(!isValid)
-                    .opacity(isValid ? 1 : 0.4)
-                }
-                Spacer()
+                field
+                content
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, 22)
         }
         .onAppear { focused = true }
+        .onDisappear { searchTask?.cancel() }
+        .onChange(of: text) { _, new in
+            searchTask?.cancel()
+            searchError = nil
+            guard !isISBN else {
+                results = []
+                searched = false
+                return
+            }
+            let query = new.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard query.count >= 3 else {
+                results = []
+                searched = false
+                return
+            }
+            // Typing a title fires a request per keystroke otherwise, and
+            // every one of them fans out across the providers server-side.
+            searchTask = Task {
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled else { return }
+                await search(query)
+            }
+        }
     }
 
-    private var isValid: Bool {
-        let n = isbn.filter { $0.isNumber || $0 == "X" || $0 == "x" }.count
+    @ViewBuilder
+    private var field: some View {
+        TextField("ISBN or title", text: $text)
+            .keyboardType(.default)
+            .textInputAutocapitalization(.words)
+            .submitLabel(.search)
+            .autocorrectionDisabled()
+            .focused($focused)
+            .font(Theme.Fonts.ui(17, weight: .semibold))
+            .foregroundStyle(Theme.Colors.appText)
+            .tint(Theme.Colors.accent)
+            .padding(14)
+            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.Colors.appLine, lineWidth: 0.5))
+            .padding(.top, 4)
+            .onSubmit {
+                if isISBN {
+                    onSubmit(normalizedISBN)
+                } else {
+                    searchTask?.cancel()
+                    searchTask = Task { await search(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if isISBN {
+            buttons
+        } else if searching {
+            HStack(spacing: 10) {
+                ProgressView().tint(Theme.Colors.appText3)
+                Text("Searching…")
+                    .font(Theme.Fonts.ui(13, weight: .medium))
+                    .foregroundStyle(Theme.Colors.appText3)
+            }
+            .padding(.top, 6)
+        } else if let searchError {
+            Text(searchError)
+                .font(Theme.Fonts.ui(13, weight: .medium))
+                .foregroundStyle(Theme.Colors.appText2)
+                .padding(.top, 6)
+        } else if !results.isEmpty {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(results) { item in
+                        resultRow(item)
+                        Divider().overlay(Theme.Colors.appLine)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.immediately)
+        } else if searched {
+            Text("Nothing found. Try the author's name as well, or type the ISBN from the back cover.")
+                .font(Theme.Fonts.ui(13, weight: .medium))
+                .foregroundStyle(Theme.Colors.appText2)
+                .padding(.top, 6)
+        } else {
+            buttons
+        }
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        HStack {
+            Spacer()
+            Button("Cancel") { dismiss() }
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText2)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            Button {
+                onSubmit(normalizedISBN)
+            } label: {
+                Text("Look up")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(
+                        Capsule().fill(LinearGradient(
+                            colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        ))
+                    )
+            }
+            .disabled(!isISBN)
+            .opacity(isISBN ? 1 : 0.4)
+        }
+    }
+
+    @ViewBuilder
+    private func resultRow(_ item: ISBNLookupResult) -> some View {
+        Button {
+            onSubmit(item.isbn13.isEmpty ? item.isbn10 : item.isbn13)
+        } label: {
+            HStack(spacing: 12) {
+                AsyncImage(url: URL(string: item.coverUrl)) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Color.white.opacity(0.06)
+                }
+                .frame(width: 38, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title)
+                        .font(Theme.Fonts.ui(14, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Text(byline(item))
+                        .font(Theme.Fonts.ui(12, weight: .medium))
+                        .foregroundStyle(Theme.Colors.appText3)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.appText3)
+            }
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func byline(_ item: ISBNLookupResult) -> String {
+        var parts: [String] = []
+        if !item.authors.isEmpty { parts.append(item.authors.joined(separator: ", ")) }
+        if !item.publishDate.isEmpty { parts.append(String(item.publishDate.prefix(4))) }
+        parts.append(item.providerDisplay)
+        return parts.joined(separator: " · ")
+    }
+
+    /// Ask the server's providers, and the on-device ones when there is no
+    /// server to ask or it had nothing.
+    private func search(_ query: String) async {
+        searching = true
+        searched = false
+        defer { searching = false }
+
+        var found: [ISBNLookupResult] = []
+        var failure: String?
+        if let account = lookupAccount() {
+            do {
+                found = try await LookupService(client: appState.makeClient(serverURL: account.url))
+                    .books(query: query)
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+        if found.isEmpty {
+            // Lite installs have no server, and a server that answered
+            // nothing still leaves the device's own sources worth asking.
+            found = await LiteMetadataAggregator(providers: LiteMetadataSettings.activeProviders)
+                .search(query: query)
+            if !found.isEmpty { failure = nil }
+        }
+        guard !Task.isCancelled else { return }
+
+        // A row is only worth showing if it carries an ISBN: the screen it
+        // opens is keyed on one. Several providers answer the same book, so
+        // the first one to claim an ISBN keeps the row.
+        var seen = Set<String>()
+        results = found.filter { item in
+            let key = item.isbn13.isEmpty ? item.isbn10 : item.isbn13
+            return !key.isEmpty && seen.insert(key).inserted
+        }
+        searchError = results.isEmpty ? failure : nil
+        searched = true
+    }
+
+    /// The server a lookup goes to: the one whose shelf the reader has
+    /// open, then any other that is signed in. Matches the result screen.
+    private func lookupAccount() -> ServerAccount? {
+        if let active = appState.activeSource, active.kind == .remote, !active.needsReauth {
+            return active
+        }
+        return appState.accounts.first { $0.kind == .remote && !$0.needsReauth }
+    }
+
+    private var normalizedISBN: String {
+        text.filter { $0.isNumber || $0 == "X" || $0 == "x" }.uppercased()
+    }
+
+    /// True when what was typed reads as an ISBN rather than a title: only
+    /// digits, spaces and hyphens, and the right number of them.
+    private var isISBN: Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let allowed = trimmed.allSatisfy { $0.isNumber || $0 == "-" || $0 == " " || $0 == "X" || $0 == "x" }
+        guard allowed else { return false }
+        let n = normalizedISBN.count
         return n == 10 || n == 13
     }
 }
@@ -1301,7 +1494,7 @@ struct RedesignedScanResultView: View {
                 .font(Theme.Fonts.cardTitle)
                 .foregroundStyle(Theme.Colors.appText)
             Text(looksLikeUPC
-                 ? "This looks like a UPC barcode, not an ISBN. Find the ISBN inside the front cover and enter it manually."
+                 ? "This looks like a UPC barcode, not an ISBN. Find the ISBN inside the front cover, or search by title instead."
                  : message)
                 .font(Theme.Fonts.ui(13, weight: .medium))
                 .foregroundStyle(Theme.Colors.appText3)
