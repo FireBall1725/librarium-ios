@@ -17,10 +17,10 @@ struct SaveErrorBanner: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Theme.Colors.bad)
+                .foregroundStyle(.red)
             Text(message)
                 .font(.footnote)
-                .foregroundStyle(Theme.Colors.appText)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             Button {
@@ -28,15 +28,18 @@ struct SaveErrorBanner: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Theme.Colors.appText3)
+                    .foregroundStyle(.secondary)
             }
             .accessibilityLabel("Dismiss")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Theme.Colors.appCard)
+        // The app's own colours, not the theme's: this sits in sheets that
+        // still use the system style as well as in the redesigned dark ones,
+        // and a fixed dark card reads as pasted on in the light ones.
+        .background(.bar)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Theme.Colors.bad.opacity(0.5)).frame(height: 1)
+            Rectangle().fill(Color.red.opacity(0.45)).frame(height: 1)
         }
         // Read out as soon as it appears, so the failure is not something
         // only a sighted reader learns about.
