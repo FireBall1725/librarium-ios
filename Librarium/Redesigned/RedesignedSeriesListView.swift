@@ -371,15 +371,18 @@ struct RedesignedSeriesListView: View {
     }
 
     private var emptyStateIcon: String {
-        isOfflineForSeries ? "icloud.slash" : "list.number"
+        if vm.loadError != nil { return "exclamationmark.arrow.triangle.2.circlepath" }
+        return isOfflineForSeries ? "icloud.slash" : "list.number"
     }
 
     private var emptyStateTitle: String {
-        isOfflineForSeries ? "No series cached" : "No series yet"
+        if vm.loadError != nil { return "Server needs updating" }
+        return isOfflineForSeries ? "No series cached" : "No series yet"
     }
 
     private var emptyStateMessage: String {
-        isOfflineForSeries
+        if let reason = vm.loadError { return reason }
+        return isOfflineForSeries
             ? "Connect to the server, open the Series tab, and let it sync — then series will appear here offline."
             : "Group books together by adding them to a series."
     }
@@ -499,6 +502,9 @@ final class RedesignedSeriesListViewModel {
     var selection = SeriesSelection()
     var sort: SeriesSortOption = .name
     var isLoading = true
+    /// Why the list is empty, when the reason is worth saying: a server
+    /// too old for these routes reads as "no series" otherwise.
+    var loadError: String?
     /// True when the user has more than one library on the primary
     /// account — otherwise the per-row library badge is redundant.
     var showLibraryBadge = false
@@ -573,8 +579,16 @@ final class RedesignedSeriesListViewModel {
                     // carried a count: no volumes held, no volumes missing, no
                     // rating, and no facets to narrow by.
                     let byID = Dictionary(uniqueKeysWithValues: libs.map { ($0.id, $0) })
-                    let page = try? await MeBrowseService(client: client)
-                        .series(selection: selection, sort: sort)
+                    var page: SeriesIndexPage?
+                    do {
+                        page = try await MeBrowseService(client: client)
+                            .series(selection: selection, sort: sort)
+                    } catch let error as MeBrowseError {
+                        self.loadError = error.errorDescription
+                    } catch {
+                        // Anything else keeps the old behaviour: the cache
+                        // still has something worth drawing.
+                    }
                     let list = page?.items ?? []
 
                     var slice: [SeriesListEntry] = []
