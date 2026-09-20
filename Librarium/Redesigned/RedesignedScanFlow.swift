@@ -1650,6 +1650,14 @@ struct RedesignedScanResultView: View {
 
         do {
             let book = try await BookService(client: client).create(libraryId: library.id, body: body)
+            // The lookup's cover lives at the provider. Ask the server to
+            // fetch and store it, or the book keeps the image only until
+            // this screen goes away. Best effort: a provider that is down
+            // or rate-limiting is not a reason to fail the add.
+            if !lookup.coverUrl.isEmpty {
+                try? await BookService(client: client)
+                    .fetchCover(libraryId: library.id, bookId: book.id, url: lookup.coverUrl)
+            }
             // Reading state belongs to the work, not to a printing. This
             // wrote through the old per-edition route, which also meant a
             // round trip to fetch an edition id purely to address something

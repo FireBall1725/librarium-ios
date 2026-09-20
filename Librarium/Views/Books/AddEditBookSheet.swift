@@ -18,6 +18,10 @@ struct AddEditBookSheet: View {
     @State private var isLookingUp = false
     @State private var lookupResults: [ISBNLookupResult] = []
     @State private var showScanner = false
+    /// The cover a lookup found, which lives at the provider until the
+    /// server is asked to fetch it. Only used when creating: on an edit the
+    /// book may already have a cover somebody chose by hand.
+    @State private var pendingCoverUrl = ""
 
     // Tag & media type state
     @State private var availableTags: [Tag] = []
@@ -216,6 +220,7 @@ struct AddEditBookSheet: View {
         req.edition?.publishDate = r.publishDate.isEmpty ? nil : r.publishDate
         req.edition?.language    = r.language
         if let count = r.pageCount { req.edition?.pageCount = count }
+        pendingCoverUrl = r.coverUrl
         lookupResults = []
         tab = .manual
     }
@@ -255,6 +260,11 @@ struct AddEditBookSheet: View {
             } else {
                 saved = try await BookService(client: appState.makeClient()).create(
                     libraryId: library.id, body: req)
+                if !pendingCoverUrl.isEmpty {
+                    // Best effort: the book is added either way.
+                    try? await BookService(client: appState.makeClient())
+                        .fetchCover(libraryId: library.id, bookId: saved.id, url: pendingCoverUrl)
+                }
             }
             onSave(saved)
             dismiss()
