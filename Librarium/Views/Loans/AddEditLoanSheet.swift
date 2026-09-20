@@ -73,10 +73,8 @@ struct AddEditLoanSheet: View {
                     TextField("Notes (optional)", text: $notes, axis: .vertical).lineLimit(3, reservesSpace: true)
                 }
 
-                if let err = error {
-                    Section { Text(err).foregroundStyle(.red).font(.caption) }
-                }
             }
+            .saveError($error)
             .navigationTitle(loan == nil ? "New Loan" : "Edit Loan")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

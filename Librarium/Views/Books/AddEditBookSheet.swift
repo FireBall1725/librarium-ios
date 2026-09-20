@@ -125,12 +125,8 @@ struct AddEditBookSheet: View {
                     }
                 }
 
-                if let err = error {
-                    Section {
-                        Text(err).foregroundStyle(.red).font(.caption)
-                    }
-                }
             }
+            .saveError($error)
             .navigationTitle(isEditing ? "Edit Book" : "Add Book")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
