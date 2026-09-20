@@ -69,7 +69,7 @@ struct RedesignedBookDetailView: View {
     @State private var showRefreshMetadata = false
     @State private var showDeleteConfirm = false
     @State private var showClearCoverConfirm = false
-    @State private var showScanner = false
+    @State private var showCoverCapture = false
     @State private var showActionStub = false
     @State private var actionStubLabel = ""
     @State private var showRateSheet = false
@@ -266,6 +266,21 @@ struct RedesignedBookDetailView: View {
         } message: {
             Text("This action gets its own redesigned sheet in a later pass.")
         }
+        .sheet(isPresented: $showCoverCapture) {
+            CoverCaptureSheet(
+                library: library,
+                bookId: currentBook.id,
+                bookTitle: currentBook.title
+            ) {
+                // Same URL, different image, so the AsyncImage needs telling.
+                coverCacheBuster += 1
+                Task { await loadDetail() }
+            }
+        }
+        .confirmationDialog("Remove the cover from \"\(currentBook.title)\"?", isPresented: $showClearCoverConfirm, titleVisibility: .visible) {
+            Button("Remove cover", role: .destructive) { Task { await clearCover() } }
+            Button("Cancel", role: .cancel) {}
+        }
         .confirmationDialog("Delete \"\(currentBook.title)\"?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 Task { await deleteBook() }
@@ -361,7 +376,7 @@ struct RedesignedBookDetailView: View {
                         .disabled(true)
                     }
                 } else {
-                    Button { showScanner = true } label: { Label("Scan cover", systemImage: "camera.viewfinder") }
+                    Button { showCoverCapture = true } label: { Label("Scan cover", systemImage: "camera.viewfinder") }
                     if let p = currentBook.coverUrl, !p.isEmpty {
                         Button("Clear cover", role: .destructive) { showClearCoverConfirm = true }
                     }
@@ -1553,6 +1568,20 @@ struct RedesignedBookDetailView: View {
     }
 
     // MARK: - Loading
+
+    /// Drop the stored cover. Like the capture sheet, this is api-only:
+    /// a Lite book's cover lives nowhere the server can be told about.
+    private func clearCover() async {
+        do {
+            let client = appState.makeClient(serverURL: library.serverURL)
+            try await BookService(client: client).deleteCover(libraryId: library.id, bookId: currentBook.id)
+            coverCacheBuster += 1
+            await loadDetail()
+        } catch {
+            actionStubLabel = error.localizedDescription
+            showActionStub = true
+        }
+    }
 
     private func loadDetail() async {
         let editionCache = EditionCache(modelContainer: modelContext.container)
