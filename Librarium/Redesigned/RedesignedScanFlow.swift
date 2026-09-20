@@ -1467,6 +1467,12 @@ struct RedesignedScanResultView: View {
             lookup = payload
         case .notFound:
             lookupError = "No results for \(isbn)."
+        case .noSourceHasIt:
+            lookupError = """
+                None of the metadata sources have \(isbn). \
+                The book is probably fine; the sources just don't list it. \
+                Add it by hand, or ask an admin to enable another source.
+                """
         case .failed(let message):
             lookupError = message
         }
@@ -1726,6 +1732,10 @@ struct RedesignedScanResultView: View {
     enum LookupOutcome {
         case success(ISBNLookupResult)
         case notFound
+        /// Every source that was asked answered, and none of them had the
+        /// book. Worth saying out loud, because the fix is another source
+        /// rather than another scan.
+        case noSourceHasIt
         case failed(String)
     }
 
@@ -1740,14 +1750,19 @@ struct RedesignedScanResultView: View {
         appState: AppState
     ) async -> LookupOutcome {
         // Path 1: api LookupService when we have a remote account.
+        var serverAnswered = false
         if let account {
             let client = await appState.makeClient(serverURL: account.url)
-            if let results = try? await LookupService(client: client).isbn(isbn),
-               let match = results.first(where: { !$0.title.isEmpty }) {
-                return .success(match)
+            do {
+                let results = try await LookupService(client: client).isbn(isbn)
+                serverAnswered = true
+                if let match = results.first(where: { !$0.title.isEmpty }) {
+                    return .success(match)
+                }
+            } catch {
+                // Unreachable or refused, which is a different thing from
+                // "nobody has this book"; fall through and try on-device.
             }
-            // Server returned but didn't find anything, or threw —
-            // fall through to the on-device providers before giving up.
         }
         // Path 2: on-device providers, in the priority order the user
         // configured. Goes through the aggregator rather than calling
@@ -1756,7 +1771,13 @@ struct RedesignedScanResultView: View {
         // Library" even with Hardcover enabled.
         let providers = LiteMetadataSettings.activeProviders
         guard !providers.isEmpty else {
-            return .failed("No metadata sources are enabled. Turn one on in Settings → Metadata sources.")
+            // A server that answered and found nothing is the common case
+            // here: a fresh install has Open Library alone, and it has no
+            // record of plenty of real ISBNs (librarium-ios #63). Say which
+            // half of it failed rather than "not recognised".
+            return serverAnswered
+                ? .noSourceHasIt
+                : .failed("No metadata sources are enabled. Turn one on in Settings → Metadata sources.")
         }
         let outcome = await LiteMetadataAggregator(providers: providers).lookupDetailed(isbn: isbn)
         let named = outcome.results.filter { !$0.title.isEmpty }
@@ -1770,7 +1791,7 @@ struct RedesignedScanResultView: View {
             let names = providers.map(\.displayName).joined(separator: " or ")
             return .failed("Couldn't reach \(names) to look up this ISBN.")
         }
-        return .notFound
+        return serverAnswered ? .noSourceHasIt : .notFound
     }
 
     /// Account to hit for ISBN lookups. Provider-based, so any remote
