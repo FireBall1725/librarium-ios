@@ -13,6 +13,19 @@ import Foundation
 struct MeBrowseService {
     let client: APIClient
 
+    /// Run a call and turn a 404 into something a reader can act on.
+    ///
+    /// These routes arrived in 26.8.1. An older server answers 404, which
+    /// every screen here read as "no books", so Library and Series looked
+    /// empty on a server that simply needed updating (librarium-ios #77).
+    private func mapping<T>(_ call: () async throws -> T) async throws -> T {
+        do {
+            return try await call()
+        } catch APIError.notFound {
+            throw MeBrowseError.serverTooOld(server: client.baseURL)
+        }
+    }
+
     // MARK: - Books
 
     func books(selection: BrowseSelection, sort: BookSortOption, page: Int, perPage: Int)
@@ -23,7 +36,7 @@ struct MeBrowseService {
         items.append(URLQueryItem(name: "per_page", value: String(perPage)))
         items.append(URLQueryItem(name: "sort", value: sort.field))
         items.append(URLQueryItem(name: "sort_dir", value: sort.dir))
-        return try await client.get(Self.path("/api/v1/me/books", items))
+        return try await mapping { try await client.get(Self.path("/api/v1/me/books", items)) }
     }
 
     /// The same list with each run collapsed into one row.
@@ -39,7 +52,7 @@ struct MeBrowseService {
         items.append(URLQueryItem(name: "per_page", value: String(perPage)))
         items.append(URLQueryItem(name: "sort", value: sort.field))
         items.append(URLQueryItem(name: "sort_dir", value: sort.dir))
-        return try await client.get(Self.path("/api/v1/me/books/grouped", items))
+        return try await mapping { try await client.get(Self.path("/api/v1/me/books/grouped", items)) }
     }
 
     /// The counts for every dimension, from one request.
@@ -80,7 +93,7 @@ struct MeBrowseService {
         // that draws them. The mosaic here draws four, and asking for the rest
         // is work nobody sees.
         items.append(URLQueryItem(name: "volumes", value: "4"))
-        return try await client.get(Self.path("/api/v1/me/series/index", items))
+        return try await mapping { try await client.get(Self.path("/api/v1/me/series/index", items)) }
     }
 
     // MARK: - Authors
@@ -175,5 +188,19 @@ struct CollectionCounts: Decodable {
         loans = read(.loans)
         loansOverdue = read(.loansOverdue)
         suggestions = read(.suggestions)
+    }
+}
+
+/// Why a person-scoped browse call could not be answered.
+enum MeBrowseError: LocalizedError {
+    /// The server predates the routes these screens are built on.
+    case serverTooOld(server: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .serverTooOld(let server):
+            let name = URL(string: server)?.host ?? server
+            return "\(name) needs updating. This screen uses parts of the API that arrived in 26.8.1."
+        }
     }
 }

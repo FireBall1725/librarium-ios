@@ -94,6 +94,20 @@ struct BookService {
         )
     }
 
+    /// Ask the server to download a provider's cover and store it.
+    ///
+    /// A lookup only hands back a URL at someone else's host. Until the
+    /// server has fetched it, the book has no cover of its own: the image
+    /// shown right after a scan is the provider's, and it is gone the next
+    /// time the book is read back (librarium-ios #33, #55, #78).
+    func fetchCover(libraryId: String, bookId: String, url: String) async throws {
+        struct Body: Encodable { let url: String }
+        try await client.postVoid(
+            "/api/v1/libraries/\(libraryId)/books/\(bookId)/cover/fetch",
+            body: Body(url: url)
+        )
+    }
+
     func deleteCover(libraryId: String, bookId: String) async throws {
         try await client.delete("/api/v1/libraries/\(libraryId)/books/\(bookId)/cover")
     }
