@@ -43,6 +43,10 @@ struct RedesignedBrowseView: View {
     @State private var libraries: [String: Library] = [:]
     @State private var searchTask: Task<Void, Never>?
     @State private var showFilters = false
+    /// Grid or rows. Per device rather than per account: it is about the
+    /// screen in your hand, and it is the web client's own split
+    /// (librarium-ios-035).
+    @AppStorage("browse.layout") private var layout: CollectionLayout = .grid
     @State private var selected: BookOpenRequest?
     @State private var selectedGroup: AuthorSelection?
     @State private var reauthAccount: ServerAccount?
@@ -206,6 +210,7 @@ struct RedesignedBrowseView: View {
             // every visit; the surfaces you cross to occasionally go behind
             // the overflow, which is where the web page puts them too.
             if isRoot && !vm.isLocal && canSaveView { saveViewButton }
+            layoutButton
             if !vm.isLocal { groupButton }
             sortMenu
             filterButton
@@ -290,6 +295,25 @@ struct RedesignedBrowseView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(n > 0 ? "Filter, \(n) applied" : "Filter")
+        .padding(.bottom, 4)
+    }
+
+    /// Which shape the list takes. One button rather than a pair, because
+    /// there are two states and the icon can say which one you would get.
+    @ViewBuilder
+    private var layoutButton: some View {
+        Button {
+            layout = layout == .grid ? .rows : .grid
+        } label: {
+            Image(systemName: layout == .grid ? "list.bullet" : "square.grid.2x2")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText2)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(Color.white.opacity(0.06)))
+                .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(layout == .grid ? "Show as rows" : "Show as a grid")
         .padding(.bottom, 4)
     }
 
@@ -417,33 +441,56 @@ struct RedesignedBrowseView: View {
         } else if vm.groups.isEmpty {
             emptyState
         } else {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                ForEach(vm.groups) { row in
-                    switch row {
-                    case .book(let book):
-                        Button { open(book) } label: {
-                            BookTile(book: book, serverURL: vm.serverURL[book.id] ?? "")
+            if layout == .rows {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(vm.groups) { row in
+                        switch row {
+                        case .book(let book):
+                            Button { open(book) } label: {
+                                BookRow(book: book, serverURL: vm.serverURL[book.id] ?? "")
+                            }
+                            .buttonStyle(.plain)
+                        case .series(let group):
+                            Button { openGroup(group) } label: {
+                                SeriesGroupRow(group: group, serverURL: primaryServerURL)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
-                    case .series(let group):
-                        Button { openGroup(group) } label: {
-                            SeriesGroupTile(group: group, serverURL: primaryServerURL)
-                        }
-                        .buttonStyle(.plain)
+                        Divider().background(Theme.Colors.appLine)
                     }
                 }
-            }
-            .padding(.horizontal, 18)
-            .onAppear {
-                if vm.hasMore, !vm.isLoadingMore {
-                    Task { await vm.loadMore(appState: appState) }
+                .padding(.horizontal, 18)
+            } else {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                    ForEach(vm.groups) { row in
+                        switch row {
+                        case .book(let book):
+                            Button { open(book) } label: {
+                                BookTile(book: book, serverURL: vm.serverURL[book.id] ?? "")
+                            }
+                            .buttonStyle(.plain)
+                        case .series(let group):
+                            Button { openGroup(group) } label: {
+                                SeriesGroupTile(group: group, serverURL: primaryServerURL)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
+                .padding(.horizontal, 18)
             }
 
+            // Fetching the next page hangs off the foot of the list rather
+            // than off either layout, so both shapes page the same way.
             if vm.isLoadingMore {
                 LoadingRow(label: "Loading more…", alignment: .center)
             } else {
                 recordRange(shown: vm.groups.count, total: vm.total, noun: "row")
+                    .onAppear {
+                        if vm.hasMore, !vm.isLoadingMore {
+                            Task { await vm.loadMore(appState: appState) }
+                        }
+                    }
             }
         }
     }
@@ -457,20 +504,38 @@ struct RedesignedBrowseView: View {
         } else if vm.books.isEmpty {
             emptyState
         } else {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
-                ForEach(vm.books, id: \.id) { book in
-                    Button { open(book) } label: {
-                        BookTile(book: book, serverURL: vm.serverURL[book.id] ?? "")
+            if layout == .rows {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(vm.books, id: \.id) { book in
+                        Button { open(book) } label: {
+                            BookRow(book: book, serverURL: vm.serverURL[book.id] ?? "")
+                        }
+                        .buttonStyle(.plain)
+                        .onAppear {
+                            if book.id == vm.books.last?.id, vm.hasMore, !vm.isLoadingMore {
+                                Task { await vm.loadMore(appState: appState) }
+                            }
+                        }
+                        Divider().background(Theme.Colors.appLine)
                     }
-                    .buttonStyle(.plain)
-                    .onAppear {
-                        if book.id == vm.books.last?.id, vm.hasMore, !vm.isLoadingMore {
-                            Task { await vm.loadMore(appState: appState) }
+                }
+                .padding(.horizontal, 18)
+            } else {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                    ForEach(vm.books, id: \.id) { book in
+                        Button { open(book) } label: {
+                            BookTile(book: book, serverURL: vm.serverURL[book.id] ?? "")
+                        }
+                        .buttonStyle(.plain)
+                        .onAppear {
+                            if book.id == vm.books.last?.id, vm.hasMore, !vm.isLoadingMore {
+                                Task { await vm.loadMore(appState: appState) }
+                            }
                         }
                     }
                 }
+                .padding(.horizontal, 18)
             }
-            .padding(.horizontal, 18)
 
             if vm.isLoadingMore {
                 LoadingRow(label: "Loading more…", alignment: .center)

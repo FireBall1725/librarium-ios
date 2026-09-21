@@ -87,3 +87,67 @@ struct SeriesGroupTile: View {
         .aspectRatio(2.0/3.0, contentMode: .fit)
     }
 }
+
+/// A run as a row, for when the collection is shown as a list.
+///
+/// Same information as the tile, laid out the way `BookRow` lays out a book,
+/// so a grouped list does not mix two row heights (librarium-ios-035).
+struct SeriesGroupRow: View {
+    let group: SeriesGroup
+    let serverURL: String
+
+    private let coverWidth: CGFloat = 44
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack(alignment: .topTrailing) {
+                // One slab rather than the tile's two: at 44 points across,
+                // a second offset edge is a smudge.
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Theme.Colors.appBackgroundEleva)
+                    .frame(width: coverWidth - 4, height: coverWidth * 1.5 - 4)
+                    .offset(x: 4, y: 4)
+                BookCoverImage(
+                    url: CoverURL.resolve(group.coverUrl, serverURL: serverURL),
+                    width: coverWidth - 4, height: coverWidth * 1.5 - 4,
+                    title: group.seriesName, author: nil, readStatus: nil
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .frame(width: coverWidth, height: coverWidth * 1.5, alignment: .topLeading)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(group.seriesName)
+                    .font(Theme.Fonts.ui(14, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.appText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(rowSubtitle)
+                    .font(Theme.Fonts.ui(12, weight: .medium))
+                    .foregroundStyle(Theme.Colors.appText3)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText3)
+                .padding(.top, 4)
+        }
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+
+    private var rowSubtitle: String {
+        var parts: [String] = []
+        if let total = group.totalCount, total > 0 {
+            parts.append("\(group.owned) of \(total) vols")
+        } else {
+            parts.append(group.owned == 1 ? "1 vol" : "\(group.owned) vols")
+        }
+        if group.read > 0 { parts.append("\(group.read) read") }
+        if group.matched > 0, group.matched != group.owned {
+            parts.append("\(group.matched) matching")
+        }
+        return parts.joined(separator: " · ")
+    }
+}
