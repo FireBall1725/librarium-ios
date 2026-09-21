@@ -30,6 +30,7 @@ private struct PerAccountDashboard {
     let currentlyReading: [DashboardBook]
     let recentlyFinished: [DashboardBook]
     let stats: DashboardStats?
+    let loans: [Loan]
 }
 
 @Observable
@@ -37,6 +38,13 @@ final class RedesignedHomeViewModel {
     var currentlyReading: [DashboardBook] = []
     var recentlyFinished: [DashboardBook] = []
     var stats: DashboardStats?
+    /// Books that are out, newest worry first. Home says who has what and
+    /// offers to take it back, the way the web home does
+    /// (librarium-ios-023).
+    var loansOut: [Loan] = []
+    /// Which server each loan came from, so marking it returned goes back to
+    /// the one that owns it.
+    var loanOrigin: [String: String] = [:]
     /// Remote-only stats, kept apart from the displayed `stats` so the
     /// Lite merge always adds to a clean remote total instead of to a
     /// number that already includes the last merge.
@@ -87,6 +95,8 @@ final class RedesignedHomeViewModel {
         var aggregatedReading: [DashboardBook] = []
         var aggregatedFinished: [DashboardBook] = []
         var aggregatedStats: DashboardStats? = nil
+        var aggregatedLoans: [Loan] = []
+        var origins: [String: String] = [:]
         var anySucceeded = false
 
         await withTaskGroup(of: PerAccountDashboard?.self) { group in
@@ -99,9 +109,12 @@ final class RedesignedHomeViewModel {
                     async let cr = svc.currentlyReading()
                     async let rf = svc.recentlyFinished()
                     async let st = svc.stats()
+                    async let loans = MeBrowseService(client: client)
+                        .loans(query: "", includeReturned: false, overdueOnly: false)
                     let crVal = try? await cr
                     let rfVal = try? await rf
                     let stVal = try? await st
+                    let loanVal = try? await loans
                     if crVal == nil && rfVal == nil && stVal == nil {
                         return nil
                     }
@@ -110,7 +123,8 @@ final class RedesignedHomeViewModel {
                         serverName: name,
                         currentlyReading: crVal ?? [],
                         recentlyFinished: rfVal ?? [],
-                        stats: stVal
+                        stats: stVal,
+                        loans: loanVal?.items ?? []
                     )
                 }
             }
@@ -120,6 +134,10 @@ final class RedesignedHomeViewModel {
                 aggregatedReading.append(contentsOf: chunk.currentlyReading.map { stamp($0, serverURL: chunk.serverURL, serverName: chunk.serverName) })
                 aggregatedFinished.append(contentsOf: chunk.recentlyFinished.map { stamp($0, serverURL: chunk.serverURL, serverName: chunk.serverName) })
                 aggregatedStats = Self.merge(aggregatedStats, chunk.stats)
+                for loan in chunk.loans {
+                    aggregatedLoans.append(loan)
+                    origins[loan.id] = chunk.serverURL
+                }
             }
         }
 
@@ -133,6 +151,14 @@ final class RedesignedHomeViewModel {
             recentlyFinished = aggregatedFinished
             remoteStats = aggregatedStats
             stats = aggregatedStats
+            // Overdue first, then whoever has had one longest. A list sorted
+            // by when it was lent puts the book that came back late at the
+            // bottom, which is the one worth a banner.
+            loansOut = aggregatedLoans.sorted { lhs, rhs in
+                if lhs.isOverdue != rhs.isOverdue { return lhs.isOverdue }
+                return lhs.loanedAt < rhs.loanedAt
+            }
+            loanOrigin = origins
         }
         // Always fold in the Lite slice — even when no remote came back
         // we still want local books on the home screen.
@@ -377,6 +403,7 @@ struct RedesignedHomeView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         header
+                        loanBanners
                         ReauthBannerStack(
                             accounts: appState.accounts.filter { $0.needsReauth },
                             onTap: { reauthAccount = $0 }
@@ -408,7 +435,13 @@ struct RedesignedHomeView: View {
             .sheet(item: $reauthAccount) { account in
                 ReauthSheet(account: account)
             }
-            .task(id: appState.accounts.map(\.id)) { await vm.load(appState: appState, modelContainer: modelContext.container) }
+            // Keyed on whether the accounts can be used, not just on which
+            // ones exist. Signing back in changes neither the list nor its
+            // ids, so a dashboard that failed while the session was expired
+            // stayed empty for the rest of the session.
+            .task(id: appState.accounts.map { "\($0.id):\($0.needsReauth)" }) {
+                await vm.load(appState: appState, modelContainer: modelContext.container)
+            }
             .refreshable { await vm.load(appState: appState, modelContainer: modelContext.container) }
             // Lite writes (scan or manual add) bump the home dashboard so
             // a freshly-added "reading" book lands on the tile row without
@@ -436,6 +469,45 @@ struct RedesignedHomeView: View {
             guard let request else { return }
             Task { await loadDetail(request: request) }
         }
+    }
+
+    /// What is out, and what is late. Two at most: a reader who has lent
+    /// twelve books does not want twelve banners between them and the book
+    /// they are reading, and the Views tab's Loans row holds the rest
+    /// (librarium-ios-023).
+    @ViewBuilder
+    private var loanBanners: some View {
+        if !vm.loansOut.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(vm.loansOut.prefix(2)) { loan in
+                    InlineBanner(
+                        tone: loan.isOverdue ? .warn : .info,
+                        title: "\(loan.bookTitle.isEmpty ? "A book" : loan.bookTitle) is with \(loan.loanedTo.isEmpty ? "someone" : loan.loanedTo)",
+                        detail: loanDetail(loan),
+                        actionLabel: "Returned",
+                        action: { Task { await markReturned(loan) } }
+                    )
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 14)
+        }
+    }
+
+    private func loanDetail(_ loan: Loan) -> String {
+        let since = loan.lentOn.map {
+            $0.formatted(.dateTime.day().month(.abbreviated))
+        } ?? loan.loanedAt
+        if let due = loan.dueLabel { return "Since \(since) · \(due)" }
+        return "Since \(since)"
+    }
+
+    private func markReturned(_ loan: Loan) async {
+        guard let url = vm.loanOrigin[loan.id] else { return }
+        let client = appState.makeClient(serverURL: url)
+        _ = try? await LoanService(client: client)
+            .markReturned(loan)
+        await vm.load(appState: appState, modelContainer: modelContext.container)
     }
 
     // MARK: - Header
