@@ -63,6 +63,10 @@ struct RedesignedBookDetailView: View {
     /// already on it and adding again is a second row, not a no-op.
     @State private var wishKnown = false
     @State private var activeLoan: Loan?
+    /// Loans on this book that have come back. Collapsed by default: a book
+    /// lent twenty times should not push its own description off the screen.
+    @State private var pastLoans: [Loan] = []
+    @State private var showLoanHistory = false
     @State private var coverCacheBuster: Int = 0
 
     @State private var showEdit = false
@@ -172,6 +176,11 @@ struct RedesignedBookDetailView: View {
                     if !bookLists.isEmpty {
                         section(label: "Lists") {
                             shelvesList
+                        }
+                    }
+                    if !pastLoans.isEmpty {
+                        section(label: pastLoans.count == 1 ? "Lent once before" : "Lent \(pastLoans.count) times before") {
+                            loanHistory
                         }
                     }
                     if hasOwnWords {
@@ -1088,6 +1097,46 @@ struct RedesignedBookDetailView: View {
         }
     }
 
+    /// Every loan that has come back, behind a disclosure.
+    @ViewBuilder
+    private var loanHistory: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button { withAnimation(.easeOut(duration: 0.15)) { showLoanHistory.toggle() } } label: {
+                HStack(spacing: 6) {
+                    Text(showLoanHistory ? "Hide" : "Show")
+                        .font(Theme.Fonts.ui(13, weight: .semibold))
+                    Image(systemName: showLoanHistory ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundStyle(Theme.Colors.accentStrong)
+            }
+            .buttonStyle(.plain)
+
+            if showLoanHistory {
+                ForEach(pastLoans) { loan in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(loan.loanedTo.isEmpty ? "Someone" : loan.loanedTo)
+                            .font(Theme.Fonts.ui(13, weight: .medium))
+                            .foregroundStyle(Theme.Colors.appText)
+                        Spacer(minLength: 0)
+                        Text(historyLine(loan))
+                            .font(Theme.Fonts.ui(12, weight: .medium))
+                            .foregroundStyle(Theme.Colors.appText3)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 22)
+    }
+
+    /// Out on the day it went, back on the day it came back. Both, because
+    /// "returned in March" says nothing about how long they had it.
+    private func historyLine(_ loan: Loan) -> String {
+        let out = formatShortDate(loan.loanedAt) ?? "?"
+        guard let back = loan.returnedAt.flatMap({ formatShortDate($0) }) else { return out }
+        return "\(out) – \(back)"
+    }
+
     // MARK: - Review
 
     private var hasOwnWords: Bool {
@@ -1910,7 +1959,14 @@ struct RedesignedBookDetailView: View {
             return
         }
         let client = appState.makeClient(serverURL: library.serverURL)
-        let loans = (try? await LoanService(client: client).list(libraryId: library.id)) ?? []
-        activeLoan = loans.first(where: { $0.bookId == currentBook.id && $0.isActive })
+        let loans = (try? await LoanService(client: client)
+            .list(libraryId: library.id, includeReturned: true)) ?? []
+        let mine = loans.filter { $0.bookId == currentBook.id }
+        activeLoan = mine.first(where: \.isActive)
+        // Newest first: who had it last is the question somebody asks about a
+        // book they are holding (librarium-ios-123).
+        pastLoans = mine
+            .filter { !$0.isActive }
+            .sorted { ($0.returnedAt ?? "") > ($1.returnedAt ?? "") }
     }
 }
