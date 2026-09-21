@@ -550,3 +550,32 @@ final class LoanDateTests: XCTestCase {
         XCTAssertTrue(try loan(loanedAt: "2026-06-02", due: "2026-07-02").isOverdue)
     }
 }
+
+/// Twelve bars say nothing to VoiceOver, so the sparkline reads as the
+/// sentence it draws.
+@MainActor
+final class SparklineLabelTests: XCTestCase {
+
+    func testSaysTheTotalAndThePeak() {
+        let label = RedesignedHomeView.sparklineLabel(counts: [0, 1, 4, 2, 0, 0, 3, 1, 0, 0, 1, 0])
+        XCTAssertEqual(label, "12 books over the last 12 months, most in one month 4")
+    }
+
+    func testOneBookIsNotOneBooks() {
+        XCTAssertEqual(
+            RedesignedHomeView.sparklineLabel(counts: [1]),
+            "1 book over the last 1 months, most in one month 1"
+        )
+    }
+
+    func testAnEmptyYearSaysSoRatherThanReadingZeroes() {
+        XCTAssertEqual(
+            RedesignedHomeView.sparklineLabel(counts: [0, 0, 0]),
+            "Nothing finished in the last 3 months"
+        )
+    }
+
+    func testNoDataAtAll() {
+        XCTAssertEqual(RedesignedHomeView.sparklineLabel(counts: []), "No reading recorded yet")
+    }
+}
