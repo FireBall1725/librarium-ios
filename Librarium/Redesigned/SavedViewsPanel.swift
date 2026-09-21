@@ -28,17 +28,9 @@ struct SavedViewsPanel: View {
                 // Not the same as having none. Telling somebody to save their
                 // first view while their existing ones sit unreachable on a
                 // server is the wrong instruction.
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("Couldn't load your views", systemImage: "exclamationmark.triangle")
-                        .font(Theme.Fonts.ui(13, weight: .semibold))
-                        .foregroundStyle(Theme.Colors.warn)
-                    Text(error)
-                        .font(Theme.Fonts.ui(12))
-                        .foregroundStyle(Theme.Colors.appText3)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 4)
+                InlineBanner(tone: .warn, title: "Couldn't load your views", detail: error)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 4)
             } else if views.isEmpty {
                 Text("A view is a filter with a name. Set some filters, then save them here.")
                     .font(Theme.Fonts.ui(13))

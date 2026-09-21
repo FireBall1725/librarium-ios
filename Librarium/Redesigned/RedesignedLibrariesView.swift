@@ -402,78 +402,29 @@ struct RedesignedLibrariesView: View {
         if !needsReauth.isEmpty || !offline.isEmpty {
             VStack(spacing: 8) {
                 ForEach(needsReauth) { account in
-                    statusBanner(
+                    InlineBanner(
+                        tone: .warn,
                         title: "\(account.name) — sign in again",
-                        subtitle: "Your session expired.",
-                        tint: Theme.Colors.warn,
-                        bg: Color(hex: 0xffb866, opacity: 0.12),
-                        actionLabel: "Sign in"
-                    ) {
-                        reauthAccount = account
-                    }
+                        detail: "Your session expired.",
+                        actionLabel: "Sign in",
+                        action: { reauthAccount = account }
+                    )
                 }
                 ForEach(offline) { account in
-                    statusBanner(
+                    InlineBanner(
+                        tone: .bad,
                         title: "\(account.name) is unreachable",
-                        subtitle: "Pull to refresh once it's back, or tap Retry.",
-                        tint: Theme.Colors.bad,
-                        bg: Color(hex: 0xff8a8a, opacity: 0.10),
-                        actionLabel: "Retry"
-                    ) {
-                        Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
-                    }
+                        detail: "Pull to refresh once it's back, or tap Retry.",
+                        actionLabel: "Retry",
+                        action: {
+                            Task { await vm.load(appState: appState, modelContainer: modelContext.container) }
+                        }
+                    )
                 }
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 14)
         }
-    }
-
-    @ViewBuilder
-    private func statusBanner(
-        title: String,
-        subtitle: String,
-        tint: Color,
-        bg: Color,
-        actionLabel: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 32, height: 32)
-                .background(Color.black.opacity(0.2), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.appText)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.Colors.appText3)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button(actionLabel, action: action)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(tint)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Color.white.opacity(0.08), in: Capsule())
-                .overlay(Capsule().stroke(tint.opacity(0.4), lineWidth: 0.5))
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(bg)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(tint.opacity(0.3), lineWidth: 0.5)
-                )
-        )
     }
 
     // MARK: - Header (matches .nav-large)
