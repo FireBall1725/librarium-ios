@@ -3,7 +3,7 @@
 
 import SwiftUI
 
-/// 5-tab redesigned app shell (mockup IA): Home · Search · [Scan] · Library · Series.
+/// 5-slot redesigned app shell: Home · Collection · [Scan] · Views · Profile.
 ///
 /// Implementation notes:
 ///
@@ -14,14 +14,13 @@ import SwiftUI
 ///   so internal `@State` + NavigationStack history persist across
 ///   switches.
 ///
-/// - The Library tab drives a local `selectedLibrary`: nil shows
-///   `RedesignedLibrariesView`, non-nil pushes `RedesignedBooksView`
-///   in a NavigationStack. Shelves / Loans / Members are not yet wired
-///   into the new shell — those screens need to be rebuilt against the
-///   mockup before they're reachable again.
+/// - Collection carries books, runs and people behind one segmented
+///   control, the way the web client carries them as three rows of one
+///   rail. Views carries the saved filters plus the surfaces that are
+///   not the collection: loans, suggestions and the libraries.
 ///
-/// - Profile is presented as a sheet from the Home tab's avatar (see
-///   `RedesignedHomeView`), not a top-level tab.
+/// - Profile is a tab rather than a sheet off the Home avatar; the
+///   avatar switches to it through `\.selectTab`.
 ///
 /// - The center Scan FAB opens `RedesignedScanFlow` as a fullScreenCover.
 struct RedesignedAppShell: View {
@@ -63,24 +62,24 @@ struct RedesignedAppShell: View {
                     .opacity(selectedTab == .home ? 1 : 0)
                     .allowsHitTesting(selectedTab == .home)
 
-                RedesignedSearchView()
-                    .opacity(selectedTab == .search ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .search)
-
                 // The collection, with library as one filter among eleven
                 // rather than the way in. The per-library screens are still
-                // here, one level down from this tab's overflow, because that
-                // is where syncing a library offline and adding to it live.
-                RedesignedBrowseView(
+                // here, under Libraries in the Views tab, because that is
+                // where syncing a library offline and adding to it live.
+                RedesignedCollectionView(
                     openBookID: $pendingOpenBookID,
-                    isActive: selectedTab == .books
+                    isActive: selectedTab == .collection
                 )
-                .opacity(selectedTab == .books ? 1 : 0)
-                .allowsHitTesting(selectedTab == .books)
+                .opacity(selectedTab == .collection ? 1 : 0)
+                .allowsHitTesting(selectedTab == .collection)
 
-                RedesignedSeriesListView()
-                    .opacity(selectedTab == .series ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .series)
+                RedesignedViewsView(isActive: selectedTab == .views)
+                    .opacity(selectedTab == .views ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .views)
+
+                RedesignedProfileView()
+                    .opacity(selectedTab == .profile ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .profile)
             }
             // Rebuilt from scratch when the collection changes. Every tab holds
             // its own loaded books, counts, filters and navigation stack, and
@@ -98,10 +97,10 @@ struct RedesignedAppShell: View {
             .safeAreaPadding(.bottom, 90)
             .contentMargins(.bottom, 90, for: .scrollContent)
 
-            // Floating editorial bar — visible across all tabs and across
-            // library list ↔ library detail. Shelves / Loans / Members
-            // have no entry point here yet; rebuilding those screens
-            // against the mockup is tracked in `plans/ios-redesign/PLAN.md`.
+            // Floating editorial bar — visible across every tab and every
+            // push. Shelves and Members have no screen in this app yet, so
+            // they have no entry point here either; that is a screen to build
+            // rather than a route to wire.
             EditorialTabBar(
                 selected: $selectedTab,
                 highlight: selectedTab,
@@ -113,6 +112,7 @@ struct RedesignedAppShell: View {
             SourcePickerView(onCancel: { showSourcePicker = false })
         }
         .environment(\.switchSource, { showSourcePicker = true })
+        .environment(\.selectTab, { selectedTab = $0 })
         .fullScreenCover(isPresented: $showScan) {
             RedesignedScanFlow(
                 onClose: { showScan = false },
@@ -129,7 +129,7 @@ struct RedesignedAppShell: View {
                         appState.setActiveSource(id: account.id)
                     }
                     pendingOpenBookID = bookID
-                    selectedTab = .books
+                    selectedTab = .collection
                 }
             )
         }
@@ -140,7 +140,20 @@ struct RedesignedAppShell: View {
 // MARK: - Tab identity
 
 enum AppTab: Hashable {
-    case home, search, books, series
+    case home, collection, views, profile
+}
+
+/// Switching tabs from inside one of them: the Home avatar opens Profile,
+/// which is a tab now rather than a sheet it could present itself.
+private struct SelectTabKey: EnvironmentKey {
+    static let defaultValue: (AppTab) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var selectTab: (AppTab) -> Void {
+        get { self[SelectTabKey.self] }
+        set { self[SelectTabKey.self] = newValue }
+    }
 }
 
 /// Detail views advertise the tab they "logically belong to" via this
@@ -178,11 +191,11 @@ private struct EditorialTabBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            tab(.home,    icon: "house.fill",          label: "Home")
-            tab(.search,  icon: "magnifyingglass",      label: "Search")
+            tab(.home,       icon: "house.fill",         label: "Home")
+            tab(.collection, icon: "books.vertical.fill", label: "Collection")
             scanFAB
-            tab(.books,   icon: "books.vertical.fill",  label: "Books")
-            tab(.series,  icon: "list.number",         label: "Series")
+            tab(.views,      icon: "bookmark.fill",      label: "Views")
+            tab(.profile,    icon: "person.crop.circle", label: "Profile")
         }
         .padding(.horizontal, 12)
         .frame(width: 320, height: 64)
@@ -251,62 +264,5 @@ private struct EditorialTabBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Scan a book")
-    }
-}
-
-// MARK: - Placeholder tab content
-
-/// Home tab placeholder. The real Home rebuild (mockup card 7) is the
-/// next big screen — currently-reading hero + jump-back-in strips.
-private struct HomeStubView: View {
-    var body: some View {
-        StubScreen(
-            eyebrow: "Librarium · Home",
-            title: "Home",
-            message: "Currently-reading hero, sparkline, and jump-back-in strips ship in a later pass."
-        )
-    }
-}
-
-/// Search tab placeholder. Replaces the cross-type fan-out search across
-/// books / series / contributors (mockup card 10).
-private struct SearchStubView: View {
-    var body: some View {
-        StubScreen(
-            eyebrow: "Librarium · Search",
-            title: "Search",
-            message: "Cross-type search (books · series · contributors) lands in a later pass."
-        )
-    }
-}
-
-private struct StubScreen: View {
-    let eyebrow: String
-    let title: String
-    let message: String
-
-    var body: some View {
-        ZStack {
-            Theme.Colors.appBackground.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 8) {
-                Text(eyebrow)
-                    .font(Theme.Fonts.ui(12, weight: .medium))
-                    .tracking(1.0)
-                    .textCase(.uppercase)
-                    .foregroundStyle(Theme.Colors.appText3)
-                Text(title)
-                    .font(Theme.Fonts.pageTitle)
-                    .foregroundStyle(Theme.Colors.appText)
-                Text(message)
-                    .font(Theme.Fonts.bodyPara)
-                    .foregroundStyle(Theme.Colors.appText2)
-                    .padding(.top, 8)
-                Spacer()
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, 18)
-            .padding(.top, 60)
-            .padding(.bottom, 120)
-        }
     }
 }

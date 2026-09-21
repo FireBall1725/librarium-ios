@@ -25,6 +25,9 @@ struct RedesignedBrowseView: View {
     /// the reader asks to open it. Cleared once pushed, so backing out of the
     /// detail does not immediately push it again.
     var openBookID: Binding<String?> = .constant(nil)
+    /// Which face of the collection is showing, when this grid is one of them.
+    /// Nil on a pushed copy, which is a scope of its own rather than a segment.
+    var surface: Binding<CollectionSurface>?
     /// Whether this tab is the one on screen.
     ///
     /// The shell keeps every tab alive behind an opacity, so a plain `.task`
@@ -40,7 +43,6 @@ struct RedesignedBrowseView: View {
     @State private var libraries: [String: Library] = [:]
     @State private var searchTask: Task<Void, Never>?
     @State private var showFilters = false
-    @State private var showViews = false
     @State private var showSearch = false
     @State private var selected: BookOpenRequest?
     @State private var selectedGroup: AuthorSelection?
@@ -71,27 +73,6 @@ struct RedesignedBrowseView: View {
     private var content: some View {
         ZStack {
             page
-            // Views on the left, filters on the right: the same sides the web
-            // client puts them on, so somebody who uses both does not have to
-            // learn a second arrangement.
-            if isRoot && !vm.isLocal {
-                SideDrawer(edge: .leading, isOpen: $showViews) {
-                    SavedViewsPanel(
-                        views: views,
-                        activeID: activeViewID,
-                        canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
-                        onOpen: { open($0); showViews = false },
-                        onSave: {
-                            newViewName = ""
-                            showViews = false
-                            showSaveView = true
-                        },
-                        onDelete: { deleteView($0) },
-                        onClose: { showViews = false },
-                        error: viewsError
-                    )
-                }
-            }
             SideDrawer(edge: .trailing, isOpen: $showFilters) {
                 BrowseFilterPanel(
                     selection: $vm.selection, facets: vm.facets,
@@ -111,6 +92,10 @@ struct RedesignedBrowseView: View {
 
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
+                        if let surface {
+                            CollectionSegments(surface: surface)
+                                .padding(.top, 14)
+                        }
                         header
                         ReauthBannerStack(
                             accounts: appState.accounts.filter { $0.needsReauth },
@@ -132,8 +117,8 @@ struct RedesignedBrowseView: View {
             // Only on the root. Inside a pushed screen a drag from the left
             // edge is the system's back gesture, which is worth more than a
             // shortcut to a panel that has a button anyway.
-            .drawerEdges(leading: $showViews, trailing: $showFilters,
-                         enabled: isRoot && !showViews && !showFilters)
+            .drawerEdges(leading: .constant(false), trailing: $showFilters,
+                         enabled: isRoot && !showFilters)
             // Keyed on being on screen, so the first visit loads and a visit
             // after a cancelled attempt tries again instead of leaving an empty
             // shelf up for the rest of the session.
@@ -224,8 +209,8 @@ struct RedesignedBrowseView: View {
             // aim at. Sort and filter stay out because they are used on almost
             // every visit; the surfaces you cross to occasionally go behind
             // the overflow, which is where the web page puts them too.
-            if isRoot { moreMenu }
-            if isRoot && !vm.isLocal { viewsButton }
+            if isRoot { searchEverythingButton }
+            if isRoot && !vm.isLocal && canSaveView { saveViewButton }
             if !vm.isLocal { groupButton }
             sortMenu
             filterButton
@@ -258,12 +243,20 @@ struct RedesignedBrowseView: View {
         return "\(count.formatted()) book\(count == 1 ? "" : "s")"
     }
 
-    /// A button as well as a swipe. A gesture nobody is told about is a feature
-    /// nobody finds.
+    /// Whether the filters on screen are worth a name.
+    private var canSaveView: Bool {
+        vm.selection.activeCount > 0 || !vm.selection.query.isEmpty
+    }
+
+    /// Saving is what this screen is for; reading the list back is the Views
+    /// tab's job now, so the drawer that did both is gone (librarium-ios-001).
     @ViewBuilder
-    private var viewsButton: some View {
-        Button { showViews = true } label: {
-            Image(systemName: "sidebar.leading")
+    private var saveViewButton: some View {
+        Button {
+            newViewName = ""
+            showSaveView = true
+        } label: {
+            Image(systemName: activeViewID == nil ? "bookmark" : "bookmark.fill")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(activeViewID == nil ? Theme.Colors.appText2 : Theme.Colors.accentStrong)
                 .frame(width: 38, height: 38)
@@ -273,7 +266,7 @@ struct RedesignedBrowseView: View {
                                          ? Theme.Colors.appLine : Color.clear, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Views")
+        .accessibilityLabel(activeViewID == nil ? "Save as a view" : "Saved as a view")
         .padding(.bottom, 4)
     }
 
@@ -326,37 +319,22 @@ struct RedesignedBrowseView: View {
         .padding(.bottom, 4)
     }
 
+    /// Everything, not just this shelf: the cross-type search over books,
+    /// runs and people. Authors, Loans, Suggestions and Libraries used to sit
+    /// behind this same overflow; they are tabs and segments now, so the one
+    /// destination with nowhere else to be keeps the slot (librarium-ios-001).
     @ViewBuilder
-    private var moreMenu: some View {
-        Menu {
-            NavigationLink { RedesignedAuthorsView() } label: {
-                Label("Authors", systemImage: "person.2")
-            }
-            NavigationLink { RedesignedLoansView() } label: {
-                Label("Loans", systemImage: "arrow.left.arrow.right")
-            }
-            NavigationLink { RedesignedSuggestionsView() } label: {
-                Label("Suggestions", systemImage: "sparkles")
-            }
-            Divider()
-            // One level down rather than a tab of its own. Syncing a library
-            // offline and adding to it are things you do to a library, which is
-            // rarer than asking a question about the whole collection.
-            NavigationLink { LibrariesBrowser() } label: {
-                Label("Libraries", systemImage: "building.columns")
-            }
-            Button { showSearch = true } label: {
-                Label("Search everything", systemImage: "magnifyingglass")
-            }
-        } label: {
-            Image(systemName: "ellipsis")
+    private var searchEverythingButton: some View {
+        Button { showSearch = true } label: {
+            Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Theme.Colors.appText2)
                 .frame(width: 38, height: 38)
                 .background(Color.white.opacity(0.06), in: Circle())
                 .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
         }
-        .accessibilityLabel("More")
+        .buttonStyle(.plain)
+        .accessibilityLabel("Search everything")
         .padding(.bottom, 4)
     }
 

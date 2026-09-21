@@ -13,13 +13,24 @@ import SwiftUI
 /// Multi-server v1 limitation: scopes to the primary account. The user's
 /// other servers are ignored here; cross-server aggregation lands later.
 struct RedesignedSeriesListView: View {
+    /// Which face of the collection is showing. Nil when this list is opened
+    /// on its own rather than as a segment.
+    var surface: Binding<CollectionSurface>?
+    /// A filter to open on, for a saved view pushed from the Views tab. A
+    /// pushed copy is a scope of its own, so it brings no stack and no
+    /// segments of its own.
+    var initialSelection: SeriesSelection?
+    /// What to call that scope.
+    var initialTitle: String?
+    /// Whether this surface is the one on screen.
+    var isActive = true
+
     @Environment(AppState.self) private var appState
     @Environment(\.modelContext) private var modelContext
 
     @State private var vm = RedesignedSeriesListViewModel()
     @State private var selectedSeries: SeriesListEntry?
     @State private var showFilters = false
-    @State private var showViews = false
     @State private var searchTask: Task<Void, Never>?
     @State private var views: [SavedList] = []
     @State private var showSaveView = false
@@ -29,22 +40,6 @@ struct RedesignedSeriesListView: View {
     var body: some View {
         ZStack {
             page
-            SideDrawer(edge: .leading, isOpen: $showViews) {
-                SavedViewsPanel(
-                    views: views,
-                    activeID: activeViewID,
-                    canSave: vm.selection.activeCount > 0 || !vm.selection.query.isEmpty,
-                    onOpen: { open($0); showViews = false },
-                    onSave: {
-                        newViewName = ""
-                        showViews = false
-                        showSaveView = true
-                    },
-                    onDelete: { deleteView($0) },
-                    onClose: { showViews = false },
-                    error: viewsError
-                )
-            }
             SideDrawer(edge: .trailing, isOpen: $showFilters) {
                 SeriesFilterPanel(
                     selection: $vm.selection, facets: vm.facets,
@@ -57,12 +52,28 @@ struct RedesignedSeriesListView: View {
 
     @ViewBuilder
     private var page: some View {
-        NavigationStack {
+        if isRoot {
+            NavigationStack { pageContent }
+        } else {
+            pageContent
+        }
+    }
+
+    /// A pushed copy is a scope of its own: one saved view, opened from the
+    /// Views tab, on the stack that pushed it.
+    private var isRoot: Bool { initialSelection == nil }
+
+    @ViewBuilder
+    private var pageContent: some View {
             ZStack {
                 Theme.Colors.appBackground.ignoresSafeArea()
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
+                        if let surface {
+                            CollectionSegments(surface: surface)
+                                .padding(.top, 14)
+                        }
                         header
                         searchPill
                         SeriesFilterPills(
@@ -76,13 +87,23 @@ struct RedesignedSeriesListView: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .toolbar(.hidden, for: .navigationBar)
-            .drawerEdges(leading: $showViews, trailing: $showFilters,
-                         enabled: !showViews && !showFilters)
-            .task(id: appState.accounts.map(\.id)) {
-                let loaded = await loadViews()
-                if let fallback = loaded.first(where: { $0.isDefault }), vm.entries.isEmpty {
-                    vm.selection = SeriesSelection(query: fallback.filterQuery)
+            .toolbar(isRoot ? .hidden : .visible, for: .navigationBar)
+            .navigationTitle(isRoot ? "" : (initialTitle ?? "Series"))
+            .navigationBarTitleDisplayMode(.inline)
+            .drawerEdges(leading: .constant(false), trailing: $showFilters,
+                         enabled: !showFilters)
+            // Keyed on being on screen as well as on the accounts, so a
+            // segment nobody has opened asks for nothing and one opened after
+            // signing back in asks again.
+            .task(id: loadKey) {
+                guard isActive else { return }
+                if let initialSelection {
+                    vm.selection = initialSelection
+                } else {
+                    let loaded = await loadViews()
+                    if let fallback = loaded.first(where: { $0.isDefault }), vm.entries.isEmpty {
+                        vm.selection = SeriesSelection(query: fallback.filterQuery)
+                    }
                 }
                 await vm.load(appState: appState, modelContainer: modelContext.container)
             }
@@ -104,7 +125,6 @@ struct RedesignedSeriesListView: View {
                 }
             }
             .onChange(of: vm.sort) { _, _ in reload() }
-        }
     }
 
     // MARK: - Header
@@ -112,24 +132,26 @@ struct RedesignedSeriesListView: View {
     @ViewBuilder
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Librarium · Browse")
+            // A segment already says Series, so as one of them the header
+            // carries the count instead of repeating the name.
+            Text(surface == nil ? "Librarium · Browse" : scopeLabel)
                 .font(Theme.Fonts.ui(12, weight: .medium))
                 .tracking(1.0)
                 .textCase(.uppercase)
                 .foregroundStyle(Theme.Colors.appText3)
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Series")
+                    Text(surface == nil ? "Series" : runSummary)
                         .font(Theme.Fonts.pageTitle)
                         .foregroundStyle(Theme.Colors.appText)
-                    if !vm.entries.isEmpty {
+                    if surface == nil, !vm.entries.isEmpty {
                         Text(runSummary)
                             .font(Theme.Fonts.ui(13, weight: .medium))
                             .foregroundStyle(Theme.Colors.appText3)
                     }
                 }
                 Spacer()
-                viewsButton
+                if canSaveView { saveViewButton }
                 sortMenu
                 filterButton
             }
@@ -174,11 +196,28 @@ struct RedesignedSeriesListView: View {
     /// How many runs, and how many volumes are missing across them. The second
     /// number is the reason to open this surface at all, so it belongs in the
     /// header rather than only inside each row.
+    /// What the list is currently showing, said the way the books grid says
+    /// it: one library names it, several name how many, none names them all.
+    private var scopeLabel: String {
+        let picked = vm.selection[.library]
+        if picked.isEmpty { return "All libraries" }
+        if picked.count == 1, let id = picked.first,
+           let match = vm.facets.library.first(where: { $0.value == id }) {
+            return match.label
+        }
+        return "\(picked.count) libraries"
+    }
+
     private var runSummary: String {
         let runs = vm.entries.count
         let missing = vm.entries.compactMap { $0.series.missingCount }.reduce(0, +)
         let base = runs == 1 ? "1 series" : "\(runs) series"
         return missing > 0 ? "\(base) · \(missing) missing" : base
+    }
+
+    private var loadKey: String {
+        let accounts = appState.accounts.map { "\($0.id):\($0.needsReauth)" }.joined(separator: ",")
+        return "\(isActive)|\(accounts)"
     }
 
     private func reload() {
@@ -253,10 +292,20 @@ struct RedesignedSeriesListView: View {
         .accessibilityLabel("Sort")
     }
 
+    /// Whether the filters on screen are worth a name.
+    private var canSaveView: Bool {
+        vm.selection.activeCount > 0 || !vm.selection.query.isEmpty
+    }
+
+    /// Saving stays here; the list of saved views is the Views tab's job now
+    /// (librarium-ios-001).
     @ViewBuilder
-    private var viewsButton: some View {
-        Button { showViews = true } label: {
-            Image(systemName: "sidebar.leading")
+    private var saveViewButton: some View {
+        Button {
+            newViewName = ""
+            showSaveView = true
+        } label: {
+            Image(systemName: activeViewID == nil ? "bookmark" : "bookmark.fill")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(activeViewID == nil ? Theme.Colors.appText2 : Theme.Colors.accentStrong)
                 .frame(width: 38, height: 38)
@@ -266,7 +315,7 @@ struct RedesignedSeriesListView: View {
                                          ? Theme.Colors.appLine : Color.clear, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Views")
+        .accessibilityLabel(activeViewID == nil ? "Save as a view" : "Saved as a view")
     }
 
     private func deleteView(_ view: SavedList) {
