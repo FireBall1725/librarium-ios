@@ -34,6 +34,7 @@ private struct PerAccountDashboard {
     let continueSeries: [ContinueSeriesEntry]
     let recentlyAdded: [DashboardBook]
     let picks: [DashboardBook]
+    let views: [SavedList]
 }
 
 @Observable
@@ -50,6 +51,10 @@ final class RedesignedHomeViewModel {
     var continueSeries: [ContinueSeriesEntry] = []
     var recentlyAdded: [DashboardBook] = []
     var picks: [DashboardBook] = []
+    /// The reader's own saved views, as chips. The web home shows them for
+    /// the same reason: a filter you named is a place you go back to, and on
+    /// the phone it was three taps away in another tab (librarium-ios-024).
+    var views: [SavedList] = []
     var loansOut: [Loan] = []
     /// Which server each loan came from, so marking it returned goes back to
     /// the one that owns it.
@@ -108,6 +113,7 @@ final class RedesignedHomeViewModel {
         var aggregatedContinue: [ContinueSeriesEntry] = []
         var aggregatedAdded: [DashboardBook] = []
         var aggregatedPicks: [DashboardBook] = []
+        var aggregatedViews: [SavedList] = []
         var origins: [String: String] = [:]
         var anySucceeded = false
 
@@ -126,6 +132,7 @@ final class RedesignedHomeViewModel {
                     async let cs = svc.continueSeries()
                     async let ra = svc.recentlyAdded()
                     async let pk = svc.picksOfTheDay()
+                    async let lists = ListService(client: client).myLists()
                     let crVal = try? await cr
                     let rfVal = try? await rf
                     let stVal = try? await st
@@ -142,7 +149,8 @@ final class RedesignedHomeViewModel {
                         loans: loanVal?.items ?? [],
                         continueSeries: (try? await cs) ?? [],
                         recentlyAdded: (try? await ra) ?? [],
-                        picks: (try? await pk) ?? []
+                        picks: (try? await pk) ?? [],
+                        views: ((try? await lists) ?? []).filter { $0.isSmart && $0.surface == "books" }
                     )
                 }
             }
@@ -164,6 +172,7 @@ final class RedesignedHomeViewModel {
                 })
                 aggregatedAdded.append(contentsOf: chunk.recentlyAdded.map { stamp($0, serverURL: chunk.serverURL, serverName: chunk.serverName) })
                 aggregatedPicks.append(contentsOf: chunk.picks.map { stamp($0, serverURL: chunk.serverURL, serverName: chunk.serverName) })
+                aggregatedViews.append(contentsOf: chunk.views)
             }
         }
 
@@ -188,6 +197,7 @@ final class RedesignedHomeViewModel {
             continueSeries = aggregatedContinue
             recentlyAdded = aggregatedAdded
             picks = aggregatedPicks
+            views = aggregatedViews
         }
         // Always fold in the Lite slice — even when no remote came back
         // we still want local books on the home screen.
@@ -432,6 +442,7 @@ struct RedesignedHomeView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         header
+                        viewChips
                         loanBanners
                         ReauthBannerStack(
                             accounts: appState.accounts.filter { $0.needsReauth },
@@ -874,6 +885,25 @@ struct RedesignedHomeView: View {
                     .frame(height: max(4, 56 * CGFloat(frac)))
             }
         }
+        // Twelve unlabelled bars are twelve unlabelled bars to VoiceOver.
+        // Read out as the sentence the chart is drawing (librarium-ios-021).
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.sparklineLabel(counts: counts))
+    }
+
+    /// "12 books over the last 12 months, most in one month 4." Said as a
+    /// total and a peak rather than twelve numbers, which is what a reader
+    /// takes from the shape of it.
+    static func sparklineLabel(counts: [Int]) -> String {
+        guard !counts.isEmpty else { return "No reading recorded yet" }
+        let total = counts.reduce(0, +)
+        let peak = counts.max() ?? 0
+        let months = counts.count
+        let bookWord = total == 1 ? "book" : "books"
+        if total == 0 {
+            return "Nothing finished in the last \(months) months"
+        }
+        return "\(total) \(bookWord) over the last \(months) months, most in one month \(peak)"
     }
 
     // MARK: - Jump back in
@@ -903,6 +933,41 @@ struct RedesignedHomeView: View {
                 }
                 .padding(.horizontal, 22)
             }
+        }
+    }
+
+    /// The reader's saved views, across the top. Tapping one opens the books
+    /// grid already filtered, which is the whole point of having named it.
+    @ViewBuilder
+    private var viewChips: some View {
+        if !vm.views.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(vm.views) { view in
+                        NavigationLink {
+                            RedesignedBrowseView(
+                                initialSelection: BrowseSelection(query: view.filterQuery),
+                                initialTitle: view.name
+                            )
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: view.isDefault ? "pin.fill" : "line.3.horizontal.decrease")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text(view.name)
+                                    .font(Theme.Fonts.ui(13, weight: .medium))
+                            }
+                            .foregroundStyle(Theme.Colors.appText2)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(Color.white.opacity(0.06)))
+                            .overlay(Capsule().stroke(Theme.Colors.appLine, lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 22)
+            }
+            .padding(.bottom, 14)
         }
     }
 
