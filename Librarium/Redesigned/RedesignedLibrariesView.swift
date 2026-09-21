@@ -355,7 +355,10 @@ struct RedesignedLibrariesView: View {
                 .scrollIndicators(.hidden)
             }
             .toolbar(.hidden, for: .navigationBar)
-            .task(id: appState.accounts.map(\.id)) {
+            // Same key as the other surfaces: signing back in has to count as
+            // a change, or the grid keeps whatever it failed to load while the
+            // session was expired.
+            .task(id: appState.accounts.map { "\($0.id):\($0.needsReauth)" }) {
                 await vm.load(appState: appState, modelContainer: modelContext.container)
             }
             .refreshable { await vm.load(appState: appState, modelContainer: modelContext.container) }

@@ -42,18 +42,26 @@ struct Loan: Codable, Identifiable {
         }
     }
 
+    /// When it went out, as a date. Nil when the string is neither shape.
+    var lentOn: Date? { Self.day(loanedAt) }
+
     /// The API sends dates as either a plain day or a full timestamp depending
-    /// on the column, so both are tried rather than assuming one.
-    private static func day(_ raw: String) -> Date? {
-        if let d = try? Date(raw, strategy: .iso8601) {
-            return Calendar.current.startOfDay(for: d)
-        }
+    /// on the column, and either way a loan date is a calendar day rather than
+    /// an instant: a book lent on 2 June was lent on 2 June wherever you read
+    /// it. So the day part is parsed in the reader's own calendar first.
+    ///
+    /// Parsing the timestamp as an instant instead is how a loan dated
+    /// 2026-06-02T00:00:00Z came out as "1 Jun" anywhere west of Greenwich.
+    static func day(_ raw: String) -> Date? {
         let f = DateFormatter()
         f.calendar = Calendar(identifier: .iso8601)
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone.current
         f.dateFormat = "yyyy-MM-dd"
         if let d = f.date(from: String(raw.prefix(10))) {
+            return Calendar.current.startOfDay(for: d)
+        }
+        if let d = try? Date(raw, strategy: .iso8601) {
             return Calendar.current.startOfDay(for: d)
         }
         return nil

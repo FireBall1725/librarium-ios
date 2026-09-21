@@ -19,13 +19,35 @@ struct LoanService {
         try await client.patch("/api/v1/libraries/\(libraryId)/loans/\(loanId)", body: body)
     }
 
-    func markReturned(libraryId: String, loanId: String) async throws -> Loan {
-        struct Body: Encodable { let returnedAt: String }
+    /// Takes the whole loan, not just its id.
+    ///
+    /// The PATCH is a replace, not a merge: it refuses a body with no
+    /// `loaned_to` and clears the due date and the notes it is not sent. So
+    /// marking a book returned by sending only the date failed outright, and
+    /// would have wiped the rest of the record if it had not
+    /// (librarium-ios-122).
+    @discardableResult
+    func markReturned(_ loan: Loan, on day: Date = Date()) async throws -> Loan {
+        var body = LoanUpdateBody()
+        body.loanedTo = loan.loanedTo
+        body.dueDate = loan.dueDate
+        body.notes = loan.notes
+        body.returnedAt = Self.day.string(from: day)
         return try await client.patch(
-            "/api/v1/libraries/\(libraryId)/loans/\(loanId)",
-            body: Body(returnedAt: ISO8601DateFormatter().string(from: Date()))
+            "/api/v1/libraries/\(loan.libraryId)/loans/\(loan.id)",
+            body: body
         )
     }
+
+    /// The server takes loan dates as plain days, not instants.
+    private static let day: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .iso8601)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 
     func delete(libraryId: String, loanId: String) async throws {
         try await client.delete("/api/v1/libraries/\(libraryId)/loans/\(loanId)")
@@ -44,10 +66,11 @@ struct LoanBody: Encodable {
     var notes: String = ""
 }
 
+/// A loan update. The route replaces rather than merges, so a field left nil
+/// here is a field cleared on the server: send the whole record back.
 struct LoanUpdateBody: Encodable {
     var loanedTo: String?
     var dueDate: String?
     var returnedAt: String?
     var notes: String?
-    var tagIds: [String]?
 }

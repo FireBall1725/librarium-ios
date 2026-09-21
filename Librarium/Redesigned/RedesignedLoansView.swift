@@ -323,7 +323,7 @@ final class LoansViewModel {
         guard let url = origin[loan.id] else { return }
         let client = appState.makeClient(serverURL: url)
         _ = try? await LoanService(client: client)
-            .markReturned(libraryId: loan.libraryId, loanId: loan.id)
+            .markReturned(loan)
         await load(appState: appState)
     }
 

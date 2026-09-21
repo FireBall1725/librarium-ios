@@ -1255,7 +1255,7 @@ struct RedesignedBookDetailView: View {
     private func markCurrentLoanReturned() async {
         guard let loan = activeLoan else { return }
         let client = appState.makeClient(serverURL: library.serverURL)
-        _ = try? await LoanService(client: client).markReturned(libraryId: library.id, loanId: loan.id)
+        _ = try? await LoanService(client: client).markReturned(loan)
         await loadActiveLoan()
     }
 
@@ -1285,7 +1285,7 @@ struct RedesignedBookDetailView: View {
                 Button("Mark returned") {
                     Task {
                         let client = appState.makeClient(serverURL: library.serverURL)
-                        _ = try? await LoanService(client: client).markReturned(libraryId: library.id, loanId: loan.id)
+                        _ = try? await LoanService(client: client).markReturned(loan)
                         await loadActiveLoan()
                     }
                 }

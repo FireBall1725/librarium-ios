@@ -511,3 +511,42 @@ final class LoanDecodingTests: XCTestCase {
         XCTAssertFalse(loan.isActive)
     }
 }
+
+/// A loan date is a calendar day, not an instant. Parsing the server's
+/// midnight-UTC timestamp as an instant showed every loan a day early for
+/// anyone west of Greenwich, which is where this collection lives.
+@MainActor
+final class LoanDateTests: XCTestCase {
+
+    private func loan(loanedAt: String, due: String? = nil) throws -> Loan {
+        let dueField = due.map { "\"due_date\": \"\($0)\"," } ?? ""
+        let json = Data("""
+        {
+          "id": "1", "library_id": "2", "book_id": "3", "book_title": "X",
+          "loaned_to": "Priya", "loaned_at": "\(loanedAt)", \(dueField)
+          "returned_at": null, "notes": "",
+          "created_at": "2026-06-02T00:00:00Z", "updated_at": "2026-06-02T00:00:00Z"
+        }
+        """.utf8)
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return try d.decode(Loan.self, from: json)
+    }
+
+    func testMidnightUTCKeepsItsOwnDay() throws {
+        let parsed = try loan(loanedAt: "2026-06-02T00:00:00Z").lentOn
+        let day = Calendar.current.dateComponents([.year, .month, .day], from: try XCTUnwrap(parsed))
+        XCTAssertEqual(day.month, 6)
+        XCTAssertEqual(day.day, 2, "a book lent on 2 June was lent on 2 June wherever you read it")
+    }
+
+    func testAPlainDayParsesToo() throws {
+        let parsed = try loan(loanedAt: "2026-06-02").lentOn
+        let day = Calendar.current.dateComponents([.month, .day], from: try XCTUnwrap(parsed))
+        XCTAssertEqual(day.day, 2)
+    }
+
+    func testAPastDueDateIsOverdue() throws {
+        XCTAssertTrue(try loan(loanedAt: "2026-06-02", due: "2026-07-02").isOverdue)
+    }
+}
