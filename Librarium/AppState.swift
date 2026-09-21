@@ -188,6 +188,10 @@ final class AppState {
     /// to "add server".
     func markNeedsReauth(id: UUID) {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        // Never wipe credentials we were merely unable to read. The tokens on
+        // the device may be perfectly good; deleting them here is what made a
+        // locked-device launch cost the user their session.
+        guard !accounts[i].tokensUnavailable else { return }
         accounts[i].accessToken = ""
         accounts[i].refreshToken = ""
         KeychainService.shared.delete("access_\(id.uuidString)")
@@ -346,6 +350,9 @@ final class AppState {
     /// via the existing `RefreshCoordinator`, so it's safe to fire
     /// this at the start of every app session for every account.
     func proactivelyRefreshIfNeeded(accountID: UUID) async {
+        if accounts.first(where: { $0.id == accountID })?.tokensUnavailable == true {
+            reloadUnavailableTokens()
+        }
         guard let account = accounts.first(where: { $0.id == accountID }),
               !account.refreshToken.isEmpty else { return }
         if let expiresAt = account.accessTokenExpiresAt,
@@ -358,8 +365,19 @@ final class AppState {
 
     @discardableResult
     func refreshToken(for accountID: UUID) async -> Bool {
-        guard let account = accounts.first(where: { $0.id == accountID }),
-              !account.refreshToken.isEmpty else {
+        guard let account = accounts.first(where: { $0.id == accountID }) else { return false }
+        // The keychain wouldn't answer this launch, so there is no token to
+        // spend and no evidence the session is over. Read it again (a launch
+        // after the device is unlocked usually succeeds) and otherwise give up
+        // quietly, leaving the stored credentials alone.
+        if account.tokensUnavailable {
+            reloadUnavailableTokens()
+            guard let reloaded = accounts.first(where: { $0.id == accountID }),
+                  !reloaded.tokensUnavailable,
+                  !reloaded.refreshToken.isEmpty else { return false }
+            return await refreshToken(for: accountID)
+        }
+        guard !account.refreshToken.isEmpty else {
             // No refresh token to spend. Don't delete — keep the metadata and
             // mark the account as needing re-auth so the UI can prompt.
             markNeedsReauth(id: accountID)
@@ -405,25 +423,77 @@ final class AppState {
         // compactMap and dropped accounts whose Keychain tokens couldn't be
         // read, which manifested as "open app, briefly see library, bounced
         // to add-server" whenever the Keychain hiccupped.
-        accounts = metas.map { meta in
-            let kind = meta.kind ?? .remote
-            let access = kind == .local ? "" : (KeychainService.shared.get("access_\(meta.id.uuidString)") ?? "")
-            let refresh = kind == .local ? "" : (KeychainService.shared.get("refresh_\(meta.id.uuidString)") ?? "")
-            return ServerAccount(
-                id: meta.id,
-                name: meta.name,
-                url: meta.url,
-                accessToken: access,
-                refreshToken: refresh,
-                user: meta.user,
-                accessTokenExpiresAt: meta.accessTokenExpiresAt,
-                kind: kind
-            )
-        }
+        accounts = metas.map(Self.materialise)
         if let raw = UserDefaults.standard.string(forKey: "primary_account_id"),
            let id = UUID(uuidString: raw),
            accounts.contains(where: { $0.id == id }) {
             primaryAccountID = id
+        }
+    }
+
+    /// Build an account from its persisted metadata plus whatever the keychain
+    /// will give us for it right now.
+    ///
+    /// A keychain that refuses (locked device on a background launch, before
+    /// the first unlock after a reboot) is recorded as `tokensUnavailable`
+    /// rather than as an empty token, because the two have opposite
+    /// consequences: empty means sign in again, refused means try again later.
+    private static func materialise(_ meta: ServerAccountMeta) -> ServerAccount {
+        let kind = meta.kind ?? .remote
+        var unavailable = false
+        var locked = false
+
+        func token(_ prefix: String) -> String {
+            guard kind == .remote else { return "" }
+            switch KeychainService.shared.lookup("\(prefix)_\(meta.id.uuidString)") {
+            case .found(let value):
+                return value
+            case .absent:
+                return ""
+            case .unavailable:
+                unavailable = true
+                return ""
+            case .locked:
+                unavailable = true
+                locked = true
+                return ""
+            }
+        }
+
+        let access = token("access")
+        let refresh = token("refresh")
+        #if DEBUG
+        // Only when something is off — a silent keychain is the failure mode
+        // this whole path exists for, and it leaves no other trace.
+        if kind == .remote && (unavailable || access.isEmpty || refresh.isEmpty) {
+            print("🔑 [AppState] \(meta.url) access=\(access.count)B refresh=\(refresh.count)B unavailable=\(unavailable) locked=\(locked)")
+        }
+        #endif
+        return ServerAccount(
+            id: meta.id,
+            name: meta.name,
+            url: meta.url,
+            accessToken: access,
+            refreshToken: refresh,
+            user: meta.user,
+            accessTokenExpiresAt: meta.accessTokenExpiresAt,
+            kind: kind,
+            tokensUnavailable: unavailable,
+            keychainLocked: locked
+        )
+    }
+
+    /// Re-read the keychain for any account whose tokens we couldn't get at
+    /// launch. Called when the app comes to the foreground, which is the point
+    /// at which a device that was locked during a background launch is not.
+    func reloadUnavailableTokens() {
+        for (i, account) in accounts.enumerated() where account.tokensUnavailable {
+            let meta = ServerAccountMeta(
+                id: account.id, name: account.name, url: account.url,
+                user: account.user, accessTokenExpiresAt: account.accessTokenExpiresAt,
+                kind: account.kind
+            )
+            accounts[i] = Self.materialise(meta)
         }
     }
 
@@ -432,18 +502,17 @@ final class AppState {
         if let data = try? JSONEncoder().encode(metas) {
             UserDefaults.standard.set(data, forKey: "server_accounts")
         }
-        // Empty token strings flag a needs-reauth account — don't write them
-        // back to the Keychain. `markNeedsReauth` already deleted those entries
-        // and we want them to stay gone until a real sign-in lands.
-        for account in accounts {
-            if account.accessToken.isEmpty {
-                KeychainService.shared.delete("access_\(account.id.uuidString)")
-            } else {
+        // Only ever write tokens here. Deleting is a deliberate act that
+        // belongs to `markNeedsReauth` and `removeAccount`; doing it from the
+        // generic save path meant an account whose tokens merely failed to
+        // load — a locked device, a background launch — had its real keychain
+        // entries erased the next time anything called save, turning a
+        // momentary read failure into a permanent sign-out.
+        for account in accounts where !account.tokensUnavailable {
+            if !account.accessToken.isEmpty {
                 KeychainService.shared.set(account.accessToken, forKey: "access_\(account.id.uuidString)")
             }
-            if account.refreshToken.isEmpty {
-                KeychainService.shared.delete("refresh_\(account.id.uuidString)")
-            } else {
+            if !account.refreshToken.isEmpty {
                 KeychainService.shared.set(account.refreshToken, forKey: "refresh_\(account.id.uuidString)")
             }
         }

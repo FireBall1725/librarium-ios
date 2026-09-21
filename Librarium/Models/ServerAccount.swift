@@ -18,6 +18,17 @@ struct ServerAccount: Identifiable {
     var accessTokenExpiresAt: Date?
     var kind: Kind = .remote
 
+    /// Set when this launch's keychain read was refused rather than answered.
+    /// The tokens are empty in memory but may well still be on the device, so
+    /// nothing may delete the keychain entries. Not persisted: it describes
+    /// this process, not the account.
+    var tokensUnavailable: Bool = false
+
+    /// Set when that refusal was specifically "the device is locked". Unlike
+    /// the general case this resolves on its own, so the app waits for the
+    /// unlock instead of telling the user their session expired.
+    var keychainLocked: Bool = false
+
     /// Differentiates a real Librarium server-backed account from a Lite-mode
     /// local-only account whose data lives entirely in SwiftData on this
     /// device. Stored on `ServerAccountMeta` so persistence round-trips it.
@@ -30,8 +41,15 @@ struct ServerAccount: Identifiable {
     /// refresh. The user invariant is "only the user deletes a server", so
     /// instead of removing accounts on auth failure we surface them as
     /// `needsReauth` and let the user sign back in (or explicitly remove).
+    ///
+    /// A locked keychain is deliberately *not* this state. Saying "your
+    /// session expired" because the device happened to be locked during a
+    /// background launch sends the user to a password prompt for a session
+    /// that never ended. Any other read failure still prompts, so there is
+    /// always a way back in.
     var needsReauth: Bool {
         if kind == .local { return false }
+        if keychainLocked { return false }
         return accessToken.isEmpty || refreshToken.isEmpty
     }
 
