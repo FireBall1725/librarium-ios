@@ -28,13 +28,16 @@ struct LoanService {
     }
 }
 
+/// Loans dropped tags on 2026-04-27. The field is not sent and the response
+/// does not carry one; a required `tags` on the model is what made every loan
+/// fail to decode, including the one the sheet had just created
+/// (librarium-ios-121).
 struct LoanBody: Encodable {
     var bookId: String
     var loanedTo: String
     var loanedAt: String
     var dueDate: String?
     var notes: String = ""
-    var tagIds: [String] = []
 }
 
 struct LoanUpdateBody: Encodable {

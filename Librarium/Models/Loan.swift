@@ -10,7 +10,6 @@ struct Loan: Codable, Identifiable {
     let dueDate: String?
     let returnedAt: String?
     let notes: String
-    let tags: [Tag]
     let createdAt: String
     let updatedAt: String
 
