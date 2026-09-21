@@ -23,13 +23,64 @@ struct LocalBrowse {
     /// Everything in the collection, before filtering. Small enough to hold:
     /// a Lite library is one person's shelf, not an instance's catalogue.
     private func all() -> [Book] {
-        BookCache(modelContainer: modelContainer).searchAllBooks(serverURL: serverURL, query: "")
+        BookCache(modelContainer: modelContainer).allBooks(serverURL: serverURL)
     }
 
     func page(selection: BrowseSelection, sort: BookSortOption) -> (books: [Book], facets: BookFacets) {
         let everything = all()
         let matched = everything.filter { matches($0, selection) }
         return (sorted(matched, by: sort), facets(everything, selection))
+    }
+
+    // MARK: - People
+
+    /// The people behind a Lite collection's books, counted on the device.
+    ///
+    /// Grouped by name rather than by contributor id. A scanned Lite book mints
+    /// a fresh id for each of its contributors, so the same author added twice
+    /// carries two ids and grouping on them would list one person twice.
+    func authors(roles picked: Set<String>) -> (people: [AuthorIndexEntry], roles: [ContributorRoleCount]) {
+        var spines: [String: [AuthorSpine]] = [:]
+        var names: [String: String] = [:]
+        var reads: [String: Int] = [:]
+        var roleCounts: [String: Set<String>] = [:]
+
+        for book in all() {
+            let isRead = book.userReadStatus?.caseInsensitiveCompare("read") == .orderedSame
+            for contributor in book.contributors where !contributor.name.isEmpty {
+                let key = contributor.name.lowercased()
+                roleCounts[contributor.role.lowercased(), default: []].insert(key)
+                if !picked.isEmpty,
+                   !picked.contains(where: { $0.caseInsensitiveCompare(contributor.role) == .orderedSame }) {
+                    continue
+                }
+                names[key] = contributor.name
+                spines[key, default: []].append(
+                    AuthorSpine(bookId: book.id, title: book.title, coverUrl: book.coverUrl)
+                )
+                if isRead { reads[key, default: 0] += 1 }
+            }
+        }
+
+        let people = names.map { key, name in
+            AuthorIndexEntry(
+                id: key,
+                name: name,
+                sortName: name.librariumSortKey(),
+                bookCount: spines[key]?.count ?? 0,
+                readCount: reads[key] ?? 0,
+                spines: spines[key] ?? [],
+                // Nothing renders these, and a Lite collection is one library
+                // anyway, so there is nothing to tell apart.
+                libraries: []
+            )
+        }
+        return (
+            people,
+            roleCounts
+                .map { ContributorRoleCount(code: $0.key, count: $0.value.count) }
+                .sorted { $0.count > $1.count }
+        )
     }
 
     // MARK: - Filtering
@@ -44,6 +95,17 @@ struct LocalBrowse {
         return BrowseFacet.allCases.allSatisfy { facet in
             let picked = selection[facet]
             if picked.isEmpty { return true }
+            if facet == .ownership {
+                // Everything in a Lite library is on the shelf. There is no
+                // wishlist and nothing suggested, so the two selections that
+                // can mean anything here both match everything.
+                //
+                // This is not a dimension to fail on: `BrowseSelection`
+                // defaults to `own=shelf`, so treating ownership as
+                // unanswerable rejected every book in the collection and a
+                // Lite shelf read as empty however much was on it.
+                return picked.contains("shelf") || picked.contains(BrowseSelection.ownershipAny)
+            }
             guard let values = Self.values(of: facet, in: book) else {
                 // A dimension this collection has no answer for. Nothing can
                 // match it, which is why the sheet never offers it.

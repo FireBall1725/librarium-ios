@@ -234,6 +234,26 @@ struct BookCache {
     /// (rotates on every fresh login). The composite `id` is parsed to
     /// fill in `serverURL` for any rows that predate the column — same
     /// self-healing pattern `books(for:)` uses.
+    /// Every cached book for one server, in title order.
+    ///
+    /// Separate from `searchAllBooks` because that one is a search box and
+    /// rightly refuses an empty needle. Browsing is the opposite question —
+    /// "show me everything" — and asking it through the search path returned
+    /// nothing, which is why a Lite collection read as empty however many
+    /// books were on it.
+    func allBooks(serverURL: String) -> [Book] {
+        let context = ModelContext(modelContainer)
+        backfillAllServerURLs(context: context)
+
+        let descriptor = FetchDescriptor<PersistedBook>(
+            predicate: #Predicate { $0.serverURL == serverURL },
+            sortBy: [SortDescriptor(\.sortTitle)]
+        )
+        guard let rows = try? context.fetch(descriptor) else { return [] }
+        let decoder = JSONDecoder()
+        return rows.compactMap { try? decoder.decode(Book.self, from: $0.payload) }
+    }
+
     func searchAllBooks(serverURL: String, query: String) -> [Book] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }

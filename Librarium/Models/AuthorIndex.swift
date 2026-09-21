@@ -34,6 +34,23 @@ struct AuthorIndexEntry: Decodable, Identifiable, Hashable {
         spines = try c.decodeIfPresent([AuthorSpine].self, forKey: .spines) ?? []
         libraries = try c.decodeIfPresent([AuthorLibraryRef].self, forKey: .libraries) ?? []
     }
+
+    /// For a Lite collection, which builds this index on the device because
+    /// there is no server to ask. Declaring `init(from:)` above suppresses the
+    /// memberwise one Swift would otherwise synthesise.
+    init(
+        id: String, name: String, sortName: String, photoUrl: String? = nil,
+        bookCount: Int, readCount: Int, spines: [AuthorSpine], libraries: [AuthorLibraryRef]
+    ) {
+        self.id = id
+        self.name = name
+        self.sortName = sortName
+        self.photoUrl = photoUrl
+        self.bookCount = bookCount
+        self.readCount = readCount
+        self.spines = spines
+        self.libraries = libraries
+    }
 }
 
 /// A book's cover, pre-addressed by the server so no client has to know how a
@@ -52,6 +69,12 @@ struct AuthorSpine: Decodable, Identifiable, Hashable {
         bookId = try c.decode(String.self, forKey: .bookId)
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         coverUrl = try c.decodeIfPresent(String.self, forKey: .coverUrl)
+    }
+
+    init(bookId: String, title: String, coverUrl: String?) {
+        self.bookId = bookId
+        self.title = title
+        self.coverUrl = coverUrl
     }
 }
 

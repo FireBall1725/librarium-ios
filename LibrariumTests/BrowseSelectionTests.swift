@@ -654,3 +654,31 @@ final class KeychainLookupTests: XCTestCase {
         }
     }
 }
+
+/// A Lite collection browses its own shelf. The failure this guards was a
+/// collection that read as empty however many books were on it.
+@MainActor
+final class LocalBrowseOwnershipTests: XCTestCase {
+
+    /// `BrowseSelection` starts with `own=shelf`, so anything that treats
+    /// ownership as a dimension a Lite library cannot answer rejects the whole
+    /// collection before any other filter is considered.
+    func testTheDefaultSelectionCarriesOwnership() {
+        XCTAssertEqual(BrowseSelection()[.ownership], BrowseSelection.defaultOwnership)
+        XCTAssertFalse(BrowseSelection()[.ownership].isEmpty)
+    }
+
+    /// Ownership stays out of the filter sheet: one value is not a choice.
+    func testOwnershipIsNotOfferedLocally() {
+        XCTAssertFalse(LocalBrowse.answers(.ownership))
+    }
+
+    func testTheDimensionsALiteShelfCanAnswer() {
+        for facet in [BrowseFacet.mediaType, .tag, .genre, .readStatus, .myRating, .library] {
+            XCTAssertTrue(LocalBrowse.answers(facet), "\(facet) should be answerable locally")
+        }
+        for facet in [BrowseFacet.shelf, .location, .rating, .favourite] {
+            XCTAssertFalse(LocalBrowse.answers(facet), "\(facet) needs a server")
+        }
+    }
+}
