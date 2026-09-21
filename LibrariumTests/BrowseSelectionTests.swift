@@ -423,3 +423,41 @@ final class GenreMatchingTests: XCTestCase {
         XCTAssertTrue(RedesignedScanResultView.genresMatching([], in: all).isEmpty)
     }
 }
+
+/// The authors list is unpaged and sorted on the phone, so the order is this
+/// app's answer rather than the server's. Ties are the interesting part.
+@MainActor
+final class AuthorSortTests: XCTestCase {
+
+    private func authors(_ pairs: [(String, Int)]) throws -> [AuthorIndexEntry] {
+        let rows = pairs.map { name, count in
+            ["id": name, "name": name, "sort_name": name, "book_count": count, "read_count": 0]
+        }
+        let json = try JSONSerialization.data(withJSONObject: rows)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode([AuthorIndexEntry].self, from: json)
+    }
+
+    func testByNameIsAlphabeticalOnTheSortName() throws {
+        let list = try authors([("Tolkien", 3), ("Asimov", 9), ("Le Guin", 5)])
+        let sorted = AuthorsViewModel.ordered(list, by: .name).map(\.name)
+        XCTAssertEqual(sorted, ["Asimov", "Le Guin", "Tolkien"])
+    }
+
+    func testByCountIsLargestFirst() throws {
+        let list = try authors([("Tolkien", 3), ("Asimov", 9), ("Le Guin", 5)])
+        let sorted = AuthorsViewModel.ordered(list, by: .count).map(\.name)
+        XCTAssertEqual(sorted, ["Asimov", "Le Guin", "Tolkien"])
+    }
+
+    func testEqualCountsKeepAStableAlphabeticalOrder() throws {
+        let list = try authors([("Tolkien", 4), ("Asimov", 4), ("Le Guin", 4)])
+        let once = AuthorsViewModel.ordered(list, by: .count).map(\.name)
+        let twice = AuthorsViewModel.ordered(once.map { name in
+            list.first { $0.name == name }!
+        }, by: .count).map(\.name)
+        XCTAssertEqual(once, ["Asimov", "Le Guin", "Tolkien"])
+        XCTAssertEqual(once, twice, "re-sorting a sorted list must not shuffle it")
+    }
+}

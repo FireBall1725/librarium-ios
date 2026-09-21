@@ -48,6 +48,7 @@ struct RedesignedAuthorsView: View {
                     header
                     searchPill
                     roleRow
+                    sortRow
                     listContent
                 }
                 .padding(.bottom, 40)
@@ -154,6 +155,38 @@ struct RedesignedAuthorsView: View {
             }
             .padding(.bottom, 12)
         }
+    }
+
+    /// Two options, so a segmented pair rather than a menu: a menu hides which
+    /// order the list is in behind a tap.
+    @ViewBuilder
+    private var sortRow: some View {
+        HStack(spacing: 4) {
+            ForEach(AuthorSortOption.allCases) { option in
+                let active = vm.sort == option
+                Button {
+                    vm.sort = option
+                    vm.reorder()
+                } label: {
+                    Text(option.label)
+                        .font(Theme.Fonts.ui(12, weight: .semibold))
+                        .foregroundStyle(active ? Theme.Colors.appText : Theme.Colors.appText2)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(active ? Color.white.opacity(0.08) : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(active ? [.isSelected] : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03)))
+        .padding(.horizontal, 22)
+        .padding(.bottom, 12)
     }
 
     @ViewBuilder
@@ -294,10 +327,28 @@ struct AuthorSelection: Identifiable, Hashable {
 
 // MARK: - View model
 
+/// Name or shelf size. The index is unpaged, so both are sorted here rather
+/// than asked for: the server has no sort parameter on this route and adding
+/// one to re-order a list the client already holds whole would be a request
+/// per tap (librarium-ios-043).
+enum AuthorSortOption: String, CaseIterable, Identifiable {
+    case name, count
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .name: return "Name"
+        case .count: return "Books"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class AuthorsViewModel {
     var authors: [AuthorIndexEntry] = []
+    var sort: AuthorSortOption = .name
     var roles: [ContributorRoleCount] = []
     var selectedRoles: Set<String> = []
     var total = 0
@@ -317,6 +368,28 @@ final class AuthorsViewModel {
             return
         }
         if selectedRoles.contains(code) { selectedRoles.remove(code) } else { selectedRoles.insert(code) }
+    }
+
+    /// Re-order what is already loaded. Changing the sort does not change the
+    /// answer, only its shape, so it does not go back to the server.
+    func reorder() {
+        authors = Self.ordered(authors, by: sort)
+    }
+
+    /// Ties break on the sort name either way, so two people with the same
+    /// number of books keep a stable order rather than swapping places each
+    /// time the list is drawn. The web page sorts on the same rule.
+    static func ordered(_ list: [AuthorIndexEntry], by sort: AuthorSortOption) -> [AuthorIndexEntry] {
+        switch sort {
+        case .name:
+            return list.sorted { $0.sortName.localizedStandardCompare($1.sortName) == .orderedAscending }
+        case .count:
+            return list.sorted {
+                $0.bookCount != $1.bookCount
+                    ? $0.bookCount > $1.bookCount
+                    : $0.sortName.localizedStandardCompare($1.sortName) == .orderedAscending
+            }
+        }
     }
 
     func coverURL(for spine: AuthorSpine, authorID: String) -> URL? {
@@ -351,11 +424,7 @@ final class AuthorsViewModel {
 
         origin = origins
         roles = roleCounts.sorted { $0.count > $1.count }
-        // The server sorts each account's answer; with two there is nothing
-        // that can sort across them, so the merge happens on the same key.
-        authors = accounts.count > 1
-            ? collected.sorted { $0.sortName.localizedStandardCompare($1.sortName) == .orderedAscending }
-            : collected
+        authors = Self.ordered(collected, by: sort)
         total = authors.count
     }
 }
