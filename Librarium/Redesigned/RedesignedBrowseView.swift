@@ -441,10 +441,9 @@ struct RedesignedBrowseView: View {
             }
 
             if vm.isLoadingMore {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .tint(Theme.Colors.appText2)
+                LoadingRow(label: "Loading more…", alignment: .center)
+            } else {
+                recordRange(shown: vm.groups.count, total: vm.total, noun: "row")
             }
         }
     }
@@ -474,11 +473,29 @@ struct RedesignedBrowseView: View {
             .padding(.horizontal, 18)
 
             if vm.isLoadingMore {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .tint(Theme.Colors.appText2)
+                LoadingRow(label: "Loading more…", alignment: .center)
+            } else {
+                recordRange(shown: vm.books.count, total: vm.total, noun: "book")
             }
+        }
+    }
+
+    /// How much of the answer is on screen.
+    ///
+    /// The web page keeps a record range beside its pager, and it is the only
+    /// thing that says whether a filter did anything: a phone scrolls a list
+    /// that looks the same at 60 rows whether the answer is 60 or 1,600
+    /// (librarium-ios-037).
+    @ViewBuilder
+    private func recordRange(shown: Int, total: Int, noun: String) -> some View {
+        if shown > 0 {
+            Text(shown >= total
+                 ? "All \(total.formatted()) \(noun)\(total == 1 ? "" : "s")"
+                 : "\(shown.formatted()) of \(total.formatted()) \(noun)\(total == 1 ? "" : "s")")
+                .font(Theme.Fonts.ui(12, weight: .medium))
+                .foregroundStyle(Theme.Colors.appText3)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
         }
     }
 
