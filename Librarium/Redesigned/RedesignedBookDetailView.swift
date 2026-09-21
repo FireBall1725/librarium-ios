@@ -73,6 +73,11 @@ struct RedesignedBookDetailView: View {
     @State private var showActionStub = false
     @State private var actionStubLabel = ""
     @State private var showRateSheet = false
+    @State private var showReviewSheet = false
+    /// Everyone else who has said something about this book. Loaded with the
+    /// rest of the detail; empty on a single-user instance, which is most of
+    /// them (librarium-ios-064).
+    @State private var readers: [BookReader] = []
     @State private var showStatusSheet = false
     @State private var showProgressSheet = false
     @State private var pendingSeriesID: String?
@@ -165,6 +170,16 @@ struct RedesignedBookDetailView: View {
                             shelvesList
                         }
                     }
+                    if hasOwnWords {
+                        section(label: "Your review") {
+                            ownReview
+                        }
+                    }
+                    if !readers.isEmpty {
+                        section(label: readers.count == 1 ? "Another reader" : "Other readers (\(readers.count))") {
+                            readersList
+                        }
+                    }
                     if let i = interaction, i.dateFinished != nil {
                         section(label: "Reading history") {
                             readingHistoryRow(interaction: i)
@@ -237,6 +252,14 @@ struct RedesignedBookDetailView: View {
                 initialRawRating: displayRawRating
             ) { newRawRating in
                 Task { await applyRating(newRawRating) }
+            }
+        }
+        .sheet(isPresented: $showReviewSheet) {
+            ReviewSheet(
+                initialReview: myBook?.review ?? "",
+                initialNotes: myBook?.notes ?? ""
+            ) { review, notes in
+                await saveReview(review: review, notes: notes)
             }
         }
         .sheet(isPresented: $showStatusSheet) {
@@ -729,6 +752,29 @@ struct RedesignedBookDetailView: View {
     /// Apply a new rating (or clear it) through the outbox.
     /// Writes to PersistedInteraction first (source of truth), queues
     /// a PendingSyncOp, then kicks a background drain.
+    /// Writes the review and the notes together, straight to the server.
+    ///
+    /// Not through the outbox like rating and status: `/sync/apply` takes
+    /// rating, read_status, is_favorite and progress, and answers anything
+    /// else `invalid` — which this client treats as acknowledged and deletes,
+    /// so a queued review would vanish without ever being sent. Online-only
+    /// until the api takes the field. Returns a message on failure, nil on
+    /// success, which is what the sheet shows.
+    private func saveReview(review: String, notes: String) async -> String? {
+        let client = appState.makeClient(serverURL: library.serverURL)
+        do {
+            let updated = try await BookService(client: client).updateMyBook(
+                bookId: currentBook.id,
+                body: UpdateMyBookRequest(review: review, notes: notes)
+            )
+            myBook = updated
+            TelemetryService.shared.send(review.isEmpty ? "review_cleared" : "review_written")
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     private func applyRating(_ newRawRating: Int?) async {
         let accountID = writeLocal { row, now in
             row.rating = newRawRating
@@ -1024,6 +1070,79 @@ struct RedesignedBookDetailView: View {
         }
     }
 
+    // MARK: - Review
+
+    private var hasOwnWords: Bool {
+        !(myBook?.review ?? "").isEmpty || !(myBook?.notes ?? "").isEmpty
+    }
+
+    /// Your own words, with the same line about who can see them that the
+    /// sheet uses. Repeated rather than assumed: this is the screen someone
+    /// hands to a friend.
+    @ViewBuilder
+    private var ownReview: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let review = myBook?.review, !review.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Visible to this library", systemImage: "person.2.fill")
+                        .font(Theme.Fonts.ui(11, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText3)
+                    Text(review)
+                        .font(Theme.Fonts.bodySerif(15))
+                        .foregroundStyle(Theme.Colors.appText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if let notes = myBook?.notes, !notes.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Private to you", systemImage: "lock.fill")
+                        .font(Theme.Fonts.ui(11, weight: .semibold))
+                        .foregroundStyle(Theme.Colors.appText3)
+                    Text(notes)
+                        .font(Theme.Fonts.bodySerif(15))
+                        .foregroundStyle(Theme.Colors.appText2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Button { showReviewSheet = true } label: {
+                Text(hasOwnWords ? "Edit" : "Write one")
+                    .font(Theme.Fonts.ui(13, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.accentStrong)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 22)
+    }
+
+    @ViewBuilder
+    private var readersList: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(readers) { reader in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Text(reader.name)
+                            .font(Theme.Fonts.ui(14, weight: .semibold))
+                            .foregroundStyle(Theme.Colors.appText)
+                        if let rating = reader.rating, rating > 0 {
+                            StarRow(rating: rating / 2, size: 11)
+                        }
+                        Spacer(minLength: 0)
+                        Text(FacetLabels.readStatus(reader.readStatus))
+                            .font(Theme.Fonts.ui(11, weight: .medium))
+                            .foregroundStyle(Theme.Colors.appText3)
+                    }
+                    if !reader.review.isEmpty {
+                        Text(reader.review)
+                            .font(Theme.Fonts.bodySerif(14))
+                            .foregroundStyle(Theme.Colors.appText2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 22)
+    }
+
     // MARK: - Quick actions
 
     @ViewBuilder
@@ -1031,7 +1150,7 @@ struct RedesignedBookDetailView: View {
         HStack(spacing: 10) {
             qa(icon: "book.pages.fill", label: "Progress") { showProgressSheet = true }
             qa(icon: "star.fill", label: "Rate")    { showRateSheet = true }
-            qa(icon: "bubble.left.fill", label: "Review") { stub("Review") }
+            qa(icon: "bubble.left.fill", label: "Review") { showReviewSheet = true }
             qa(icon: "arrow.up.arrow.down.circle.fill", label: "Loan") {
                 stub("Loan")
             }
@@ -1647,6 +1766,10 @@ struct RedesignedBookDetailView: View {
                 // server.
                 if await ServerCapabilities.shared.hasWorkKeyedReadingState(serverURL: library.serverURL) {
                     myBook = try? await service.myBook(bookId: currentBook.id)
+                    // Best effort and never blocking: a server that has no
+                    // such route, or a library with one member, both mean the
+                    // section simply does not appear.
+                    readers = (try? await service.readers(bookId: currentBook.id)) ?? []
                     // The per-edition shape is what the rest of this view and
                     // the local store still speak, so the work-keyed answer is
                     // folded into it rather than duplicating every read path.
