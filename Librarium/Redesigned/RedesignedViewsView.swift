@@ -18,6 +18,12 @@ struct RedesignedViewsView: View {
 
     @State private var bookViews: [SavedList] = []
     @State private var seriesViews: [SavedList] = []
+    /// The lists that enumerate their books rather than computing them. Web
+    /// shows these in the same rail block as the views, because the only
+    /// difference to a reader is how membership is settled
+    /// (librarium-ios-050).
+    @State private var lists: [SavedList] = []
+    @State private var counts = CollectionCounts()
     @State private var isLoading = true
     /// Why the list is empty, when it is not simply empty. A failed request
     /// and a reader with no views look identical otherwise.
@@ -41,6 +47,11 @@ struct RedesignedViewsView: View {
                             title: "Series views",
                             views: seriesViews,
                             empty: "Filter the runs and save that too."
+                        )
+                        savedSection(
+                            title: "Lists",
+                            views: lists,
+                            empty: "A list is books you pick by hand. Add one from a book's page."
                         )
                     }
                     .padding(.bottom, 40)
@@ -90,12 +101,31 @@ struct RedesignedViewsView: View {
         VStack(spacing: 0) {
             NavigationLink { RedesignedLoansView() } label: {
                 destinationRow(icon: "arrow.left.arrow.right", title: "Loans",
-                               detail: "What is out, and what is late")
+                               detail: "What is out, and what is late",
+                               // What is still out, not every loan ever
+                               // recorded, which would climb forever and mean
+                               // nothing. Tinted when any of them are late.
+                               count: counts.loans,
+                               warn: counts.loansOverdue > 0)
             }
             .buttonStyle(.plain)
             NavigationLink { RedesignedSuggestionsView() } label: {
                 destinationRow(icon: "sparkles", title: "Suggestions",
-                               detail: "What to read next")
+                               detail: "What to read next",
+                               count: counts.suggestions)
+            }
+            .buttonStyle(.plain)
+            NavigationLink {
+                // A row rather than a screen of its own: the wishlist is the
+                // books grid with one ownership value ticked, which is how the
+                // web client reaches it too.
+                RedesignedBrowseView(
+                    initialSelection: BrowseSelection(query: "own=wishlist"),
+                    initialTitle: "Wishlist"
+                )
+            } label: {
+                destinationRow(icon: "heart", title: "Wishlist",
+                               detail: "Books you mean to get")
             }
             .buttonStyle(.plain)
             NavigationLink { LibrariesBrowser() } label: {
@@ -108,7 +138,8 @@ struct RedesignedViewsView: View {
     }
 
     @ViewBuilder
-    private func destinationRow(icon: String, title: String, detail: String) -> some View {
+    private func destinationRow(icon: String, title: String, detail: String,
+                                count: Int? = nil, warn: Bool = false) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .semibold))
@@ -124,6 +155,12 @@ struct RedesignedViewsView: View {
                     .foregroundStyle(Theme.Colors.appText3)
             }
             Spacer(minLength: 0)
+            if let count, count > 0 {
+                Text(count.formatted())
+                    .font(Theme.Fonts.ui(12, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(warn ? Theme.Colors.warn : Theme.Colors.appText3)
+            }
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Theme.Colors.appText3)
@@ -175,7 +212,14 @@ struct RedesignedViewsView: View {
 
     @ViewBuilder
     private func destination(for view: SavedList) -> some View {
-        if view.surface == "series" {
+        if !view.isSmart {
+            // A manual list is the shelf facet, which is what the server calls
+            // the same thing.
+            RedesignedBrowseView(
+                initialSelection: BrowseSelection(query: "shelf=\(view.id)"),
+                initialTitle: view.name
+            )
+        } else if view.surface == "series" {
             RedesignedSeriesListView(
                 initialSelection: SeriesSelection(query: view.filterQuery),
                 initialTitle: view.name
@@ -210,6 +254,15 @@ struct RedesignedViewsView: View {
                 }
             }
             Spacer(minLength: 0)
+            // Only the lists that enumerate their books know their own size.
+            // A smart view's count is whatever its filter returns today, which
+            // is a request per row, so the number waits for the list to open.
+            if !view.isSmart, view.bookCount > 0 {
+                Text(view.bookCount.formatted())
+                    .font(Theme.Fonts.ui(12, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.Colors.appText3)
+            }
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Theme.Colors.appText3)
@@ -232,6 +285,7 @@ struct RedesignedViewsView: View {
             // nothing to fetch and nothing broken about that.
             bookViews = []
             seriesViews = []
+            lists = []
             error = nil
             isLoading = false
             return
@@ -240,10 +294,13 @@ struct RedesignedViewsView: View {
         defer { isLoading = false }
         do {
             let service = ListService(client: client)
-            async let books = service.savedViews(surface: "books")
-            async let series = service.savedViews(surface: "series")
-            bookViews = try await books
-            seriesViews = try await series
+            async let all = service.myLists()
+            async let totals = try? MeBrowseService(client: client).counts()
+            let loaded = try await all
+            bookViews = loaded.filter { $0.isSmart && $0.surface == "books" }
+            seriesViews = loaded.filter { $0.isSmart && $0.surface == "series" }
+            lists = loaded.filter { !$0.isSmart }
+            counts = await totals ?? CollectionCounts()
             error = nil
         } catch {
             self.error = error.localizedDescription
