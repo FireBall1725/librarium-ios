@@ -694,6 +694,17 @@ struct RedesignedScanResultView: View {
     @State private var lookupError: String?
     @State private var libraries: [Library] = []
     @State private var librariesError: String?
+    /// True once the fan-out has been run, so "none" can be told from "not
+    /// asked yet" without showing a new account an error.
+    @State private var librariesLoaded = false
+
+    /// Which sheet this screen is showing, if any.
+    enum ScanSheet: String, Identifiable {
+        case mediaType, createLibrary
+        var id: String { rawValue }
+    }
+
+    @State private var activeSheet: ScanSheet?
     /// What the ownership check found for one library. Carries the book
     /// id so the result screen can offer to open the existing record,
     /// and the copy count so the badge can say how many are on the
@@ -734,7 +745,6 @@ struct RedesignedScanResultView: View {
     @State private var isAdding = false
     @State private var addError: String?
     @State private var addedSuccess = false
-    @State private var showMediaTypeSheet = false
     @State private var moreOpen = false
 
     /// Read from the server rather than written out here. The hardcoded list
@@ -809,13 +819,31 @@ struct RedesignedScanResultView: View {
         .onChange(of: selectedLibraryKey) { _, _ in
             Task { await loadLibraryDependentMetadata() }
         }
-        .sheet(isPresented: $showMediaTypeSheet) {
-            MediaTypePickerSheet(
-                types: currentMediaTypes,
-                selectedID: $selectedMediaTypeID
-            )
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
+        // One sheet modifier, switched on what is being shown. Two `.sheet`
+        // modifiers on a view means the second never presents, and attaching
+        // one inside the scrolling stack does not present either; both fail
+        // silently, which is a long way to go to learn it twice.
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .mediaType:
+                MediaTypePickerSheet(
+                    types: currentMediaTypes,
+                    selectedID: $selectedMediaTypeID
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            case .createLibrary:
+                CreateLibrarySheet { created in
+                    activeSheet = nil
+                    // Selected straight away: somebody who just made a library
+                    // to put this book in should not have to pick it as well.
+                    libraries = [created]
+                    selectedLibraryKey = created.clientKey
+                    librariesError = nil
+                    Task { await loadLibraryDependentMetadata() }
+                }
+                .environment(appState)
+            }
         }
     }
 
@@ -1168,6 +1196,11 @@ struct RedesignedScanResultView: View {
                 } else if let librariesError {
                     InlineBanner(tone: .warn, title: librariesError)
                         .padding(14)
+                } else if librariesLoaded {
+                    // The first thing a new account does is scan a book, and
+                    // it has nowhere to put it yet. Offering the way out here
+                    // beats sending them to find Libraries first.
+                    noLibrariesYet
                 } else {
                     LoadingRow(label: "Loading libraries…")
                         .padding(.horizontal, 14)
@@ -1181,6 +1214,35 @@ struct RedesignedScanResultView: View {
             .padding(.horizontal, 22)
         }
         .padding(.bottom, 18)
+    }
+
+    @ViewBuilder
+    private var noLibrariesYet: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("No libraries yet")
+                .font(Theme.Fonts.ui(14, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText)
+            Text("A library is where a book goes. Make one and this book lands in it.")
+                .font(Theme.Fonts.ui(12, weight: .medium))
+                .foregroundStyle(Theme.Colors.appText3)
+                .fixedSize(horizontal: false, vertical: true)
+            Button { activeSheet = .createLibrary } label: {
+                Text("Create a library")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(
+                        Capsule().fill(LinearGradient(
+                            colors: [Theme.Colors.accent, Theme.Colors.accentDeep],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        ))
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
     }
 
     @ViewBuilder
@@ -1275,7 +1337,7 @@ struct RedesignedScanResultView: View {
                 .font(Theme.Fonts.label(11))
                 .tracking(1.2)
                 .foregroundStyle(Theme.Colors.appText3)
-            Button { showMediaTypeSheet = true } label: {
+            Button { activeSheet = .mediaType } label: {
                 HStack(spacing: 6) {
                     Text(currentMediaTypeName ?? mediaTypePlaceholder)
                         .font(.system(size: 14, weight: .semibold))
@@ -1733,8 +1795,14 @@ struct RedesignedScanResultView: View {
         }
 
         let libs = await allLibrariesTask
+        librariesLoaded = true
         if libs.isEmpty {
-            librariesError = "Couldn't load libraries from any server."
+            // A first-time account lands here, and telling them the app could
+            // not reach their server when it answered perfectly well sends
+            // them to check their network instead of making a library.
+            librariesError = everyServerAnswered
+                ? nil
+                : "Couldn't reach your server. Check the connection and pull to refresh."
         } else {
             libraries = libs.sorted { lhs, rhs in
                 if lhs.serverName == rhs.serverName {
@@ -1757,8 +1825,15 @@ struct RedesignedScanResultView: View {
     /// correct server. Lite accounts contribute their SwiftData
     /// libraries here too so the user can scan straight into a local
     /// library without needing a server.
+    /// Whether every account answered, whatever it answered with. A new
+    /// account has no libraries and nothing has gone wrong; a server that is
+    /// down has none either, and the two need different words and different
+    /// buttons (librarium-ios-100).
+    @State private var everyServerAnswered = true
+
     private func loadAllLibraries() async -> [Library] {
         var collected: [Library] = []
+        var answered = true
 
         // Lite libraries (local SwiftData) first — cheap, no network.
         let localAccounts = appState.accounts.filter { $0.kind == .local }
@@ -1781,12 +1856,14 @@ struct RedesignedScanResultView: View {
         // Remote accounts via api fan-out.
         let remoteAccounts = appState.accounts.filter { $0.kind == .remote }
         guard !remoteAccounts.isEmpty else { return collected }
-        await withTaskGroup(of: [Library].self) { group in
+        await withTaskGroup(of: [Library]?.self) { group in
             for account in remoteAccounts {
                 group.addTask {
                     let client = await appState.makeClient(serverURL: account.url)
                     guard var libs = try? await LibraryService(client: client).list() else {
-                        return []
+                        // Nil is "did not answer", which is not the same as an
+                        // account that answered with none.
+                        return nil
                     }
                     for i in libs.indices {
                         libs[i].serverURL = account.url
@@ -1796,9 +1873,14 @@ struct RedesignedScanResultView: View {
                 }
             }
             for await libs in group {
+                guard let libs else {
+                    answered = false
+                    continue
+                }
                 collected.append(contentsOf: libs)
             }
         }
+        everyServerAnswered = answered
         return collected
     }
 
