@@ -31,6 +31,9 @@ private struct PerAccountDashboard {
     let recentlyFinished: [DashboardBook]
     let stats: DashboardStats?
     let loans: [Loan]
+    let continueSeries: [ContinueSeriesEntry]
+    let recentlyAdded: [DashboardBook]
+    let picks: [DashboardBook]
 }
 
 @Observable
@@ -41,6 +44,12 @@ final class RedesignedHomeViewModel {
     /// Books that are out, newest worry first. Home says who has what and
     /// offers to take it back, the way the web home does
     /// (librarium-ios-023).
+    /// The rails under the hero. Three endpoints that had no iOS caller at
+    /// all, so a shelf of 1,600 books offered nothing to look at beyond what
+    /// you were already reading (librarium-ios-022).
+    var continueSeries: [ContinueSeriesEntry] = []
+    var recentlyAdded: [DashboardBook] = []
+    var picks: [DashboardBook] = []
     var loansOut: [Loan] = []
     /// Which server each loan came from, so marking it returned goes back to
     /// the one that owns it.
@@ -96,6 +105,9 @@ final class RedesignedHomeViewModel {
         var aggregatedFinished: [DashboardBook] = []
         var aggregatedStats: DashboardStats? = nil
         var aggregatedLoans: [Loan] = []
+        var aggregatedContinue: [ContinueSeriesEntry] = []
+        var aggregatedAdded: [DashboardBook] = []
+        var aggregatedPicks: [DashboardBook] = []
         var origins: [String: String] = [:]
         var anySucceeded = false
 
@@ -111,6 +123,9 @@ final class RedesignedHomeViewModel {
                     async let st = svc.stats()
                     async let loans = MeBrowseService(client: client)
                         .loans(query: "", includeReturned: false, overdueOnly: false)
+                    async let cs = svc.continueSeries()
+                    async let ra = svc.recentlyAdded()
+                    async let pk = svc.picksOfTheDay()
                     let crVal = try? await cr
                     let rfVal = try? await rf
                     let stVal = try? await st
@@ -124,7 +139,10 @@ final class RedesignedHomeViewModel {
                         currentlyReading: crVal ?? [],
                         recentlyFinished: rfVal ?? [],
                         stats: stVal,
-                        loans: loanVal?.items ?? []
+                        loans: loanVal?.items ?? [],
+                        continueSeries: (try? await cs) ?? [],
+                        recentlyAdded: (try? await ra) ?? [],
+                        picks: (try? await pk) ?? []
                     )
                 }
             }
@@ -138,6 +156,14 @@ final class RedesignedHomeViewModel {
                     aggregatedLoans.append(loan)
                     origins[loan.id] = chunk.serverURL
                 }
+                aggregatedContinue.append(contentsOf: chunk.continueSeries.map {
+                    var entry = $0
+                    entry.serverURL = chunk.serverURL
+                    entry.serverName = chunk.serverName
+                    return entry
+                })
+                aggregatedAdded.append(contentsOf: chunk.recentlyAdded.map { stamp($0, serverURL: chunk.serverURL, serverName: chunk.serverName) })
+                aggregatedPicks.append(contentsOf: chunk.picks.map { stamp($0, serverURL: chunk.serverURL, serverName: chunk.serverName) })
             }
         }
 
@@ -159,6 +185,9 @@ final class RedesignedHomeViewModel {
                 return lhs.loanedAt < rhs.loanedAt
             }
             loanOrigin = origins
+            continueSeries = aggregatedContinue
+            recentlyAdded = aggregatedAdded
+            picks = aggregatedPicks
         }
         // Always fold in the Lite slice — even when no remote came back
         // we still want local books on the home screen.
@@ -417,6 +446,9 @@ struct RedesignedHomeView: View {
                             statsCard(stats: s)
                         }
                         jumpBackInSection
+                        continueSeriesSection
+                        railSection(title: "Recently added", books: vm.recentlyAdded)
+                        railSection(title: "Picks of the day", books: vm.picks)
                     }
                     .padding(.bottom, 40)
                 }
@@ -872,6 +904,70 @@ struct RedesignedHomeView: View {
                 .padding(.horizontal, 22)
             }
         }
+    }
+
+    /// The next volume of a run you are partway through, with how far in you
+    /// are said out loud: a cover alone does not tell you whether this is the
+    /// one you already read.
+    @ViewBuilder
+    private var continueSeriesSection: some View {
+        if !vm.continueSeries.isEmpty {
+            railHeader("Continue the series")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(vm.continueSeries.prefix(8)) { entry in
+                        Button { openDetail(for: entry.asBook) } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                jumpBackTile(book: entry.asBook)
+                                // Short enough to fit the tile: "You read 14
+                                // · next is 15" truncates to "ne…", which
+                                // says less than nothing.
+                                Text("Read \(entry.lastReadPosition) · next \(entry.position)")
+                                    .font(Theme.Fonts.ui(11, weight: .medium))
+                                    .foregroundStyle(Theme.Colors.accentStrong)
+                                    .lineLimit(1)
+                                    .frame(width: 100, alignment: .leading)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 22)
+            }
+        }
+    }
+
+    /// One rail of book tiles. Eight at most: a strip you scroll for a minute
+    /// is a page, and a page belongs in Collection.
+    @ViewBuilder
+    private func railSection(title: String, books: [DashboardBook]) -> some View {
+        if !books.isEmpty {
+            railHeader(title)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(books.prefix(8)) { book in
+                        Button { openDetail(for: book) } label: {
+                            jumpBackTile(book: book)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 22)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func railHeader(_ title: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(Theme.Fonts.display(20, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText)
+            Spacer()
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 18)
+        .padding(.bottom, 10)
     }
 
     /// Strip content: other in-progress books (after the hero) — falls
