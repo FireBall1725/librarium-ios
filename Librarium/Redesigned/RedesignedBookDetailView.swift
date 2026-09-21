@@ -832,7 +832,7 @@ struct RedesignedBookDetailView: View {
     /// and grid stay visually consistent.
     @ViewBuilder
     private var heroSplash: some View {
-        let palette = Self.splashPalette(for: currentBook.title)
+        let palette = SplashPalette.forTitle(currentBook.title)
         GeometryReader { geo in
             ZStack {
                 Ellipse()
@@ -852,28 +852,6 @@ struct RedesignedBookDetailView: View {
         .padding(.top, -60)
         .padding(.bottom, -40)
         .allowsHitTesting(false)
-    }
-
-    private struct SplashPalette { let first: Color; let second: Color }
-
-    private static func splashPalette(for title: String) -> SplashPalette {
-        var hash: UInt32 = 5381
-        for byte in title.utf8 { hash = (hash &* 33) &+ UInt32(byte) }
-        let palettes: [SplashPalette] = [
-            // Mockup default: violet + indigo
-            SplashPalette(first: Color(hex: 0x8c50c8), second: Color(hex: 0x5064dc)),
-            // Forest + teal
-            SplashPalette(first: Color(hex: 0x3a8c5a), second: Color(hex: 0x2c8a96)),
-            // Rose + amber
-            SplashPalette(first: Color(hex: 0xc8508c), second: Color(hex: 0xdc8a50)),
-            // Cobalt + violet
-            SplashPalette(first: Color(hex: 0x5064dc), second: Color(hex: 0x8c50c8)),
-            // Crimson + rust
-            SplashPalette(first: Color(hex: 0xc85050), second: Color(hex: 0xa0623a)),
-            // Gold + olive
-            SplashPalette(first: Color(hex: 0xdcb850), second: Color(hex: 0x8a8c3a))
-        ]
-        return palettes[Int(hash % UInt32(palettes.count))]
     }
 
     private var coverURL: URL? {
@@ -932,7 +910,7 @@ struct RedesignedBookDetailView: View {
                 pillView(
                     text: format.capitalized,
                     fg: Theme.Colors.gold,
-                    bg: Color(hex: 0xf3c971, opacity: 0.18),
+                    bg: Theme.Colors.gold.opacity(0.18),
                     dot: nil
                 )
             }
@@ -968,13 +946,13 @@ struct RedesignedBookDetailView: View {
             // having opened this book, and "Read in a collection" is the
             // difference between that and a wrong answer.
             let text = readStatusIsInherited ? "Read in a collection" : "Read"
-            return StatusPill(text: text, fg: Theme.Colors.good, bg: Color(hex: 0x7bd6a8, opacity: 0.18), dot: Theme.Colors.good)
+            return StatusPill(text: text, fg: Theme.Colors.good, bg: Theme.Colors.good.opacity(0.18), dot: Theme.Colors.good)
         case "reading":
             return StatusPill(text: "Reading", fg: Theme.Colors.accentStrong, bg: Theme.Colors.accentSoft, dot: Theme.Colors.accent)
         case "want_to_read", "want-to-read":
-            return StatusPill(text: "Want to read", fg: Theme.Colors.gold, bg: Color(hex: 0xf3c971, opacity: 0.18), dot: Theme.Colors.gold)
+            return StatusPill(text: "Want to read", fg: Theme.Colors.gold, bg: Theme.Colors.gold.opacity(0.18), dot: Theme.Colors.gold)
         case "did_not_finish":
-            return StatusPill(text: "Did not finish", fg: Theme.Colors.bad, bg: Color(hex: 0xff8a8a, opacity: 0.18), dot: Theme.Colors.bad)
+            return StatusPill(text: "Did not finish", fg: Theme.Colors.bad, bg: Theme.Colors.bad.opacity(0.18), dot: Theme.Colors.bad)
         default:
             return StatusPill(text: "Unread", fg: Theme.Colors.appText3, bg: Color.white.opacity(0.05), dot: nil)
         }
@@ -1093,10 +1071,10 @@ struct RedesignedBookDetailView: View {
         section(label: "Currently lent") {
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
-                    Circle().fill(Color(hex: 0xf59e0b, opacity: 0.18))
+                    Circle().fill(Theme.Colors.lent.opacity(0.18))
                     Image(systemName: "arrow.up.arrow.down")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color(hex: 0xf59e0b))
+                        .foregroundStyle(Theme.Colors.lent)
                 }
                 .frame(width: 36, height: 36)
 
@@ -1126,10 +1104,10 @@ struct RedesignedBookDetailView: View {
             .padding(14)
             .background(
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(Color(hex: 0xf59e0b, opacity: 0.05))
+                    .fill(Theme.Colors.lent.opacity(0.05))
                     .overlay(
                         RoundedRectangle(cornerRadius: 14)
-                            .stroke(Color(hex: 0xf59e0b, opacity: 0.3), lineWidth: 0.5)
+                            .stroke(Theme.Colors.lent.opacity(0.3), lineWidth: 0.5)
                     )
             )
         }

@@ -192,7 +192,7 @@ struct RedesignedSeriesDetailView: View {
             if let genre = series.genres.first, !genre.isEmpty {
                 pillView(text: genre.capitalized, fg: Theme.Colors.accentStrong, bg: Theme.Colors.accentSoft)
             }
-            pillView(text: volumesPillText, fg: Theme.Colors.gold, bg: Color(hex: 0xf3c971, opacity: 0.18))
+            pillView(text: volumesPillText, fg: Theme.Colors.gold, bg: Theme.Colors.gold.opacity(0.18))
         }
     }
 
@@ -223,7 +223,7 @@ struct RedesignedSeriesDetailView: View {
     /// from the series title so the splash stays stable per series.
     @ViewBuilder
     private var heroSplash: some View {
-        let palette = Self.splashPalette(for: series.name)
+        let palette = SplashPalette.forTitle(series.name)
         GeometryReader { geo in
             ZStack {
                 Ellipse()
@@ -241,22 +241,6 @@ struct RedesignedSeriesDetailView: View {
         .padding(.top, -60)
         .padding(.bottom, -40)
         .allowsHitTesting(false)
-    }
-
-    private struct SplashPalette { let first: Color; let second: Color }
-
-    private static func splashPalette(for title: String) -> SplashPalette {
-        var hash: UInt32 = 5381
-        for byte in title.utf8 { hash = (hash &* 33) &+ UInt32(byte) }
-        let palettes: [SplashPalette] = [
-            SplashPalette(first: Color(hex: 0x8c50c8), second: Color(hex: 0x5064dc)),
-            SplashPalette(first: Color(hex: 0x3a8c5a), second: Color(hex: 0x2c8a96)),
-            SplashPalette(first: Color(hex: 0xc8508c), second: Color(hex: 0xdc8a50)),
-            SplashPalette(first: Color(hex: 0x5064dc), second: Color(hex: 0x8c50c8)),
-            SplashPalette(first: Color(hex: 0xc85050), second: Color(hex: 0xa0623a)),
-            SplashPalette(first: Color(hex: 0xdcb850), second: Color(hex: 0x8a8c3a))
-        ]
-        return palettes[Int(hash % UInt32(palettes.count))]
     }
 
     // MARK: - Progress card

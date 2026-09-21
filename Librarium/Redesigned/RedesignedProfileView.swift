@@ -134,7 +134,7 @@ struct RedesignedProfileView: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(Color(hex: 0xf3c971, opacity: 0.15), in: Capsule())
+                    .background(Theme.Colors.gold.opacity(0.15), in: Capsule())
                 }
             }
             Spacer()
@@ -334,7 +334,7 @@ struct RedesignedProfileView: View {
         ZStack {
             if primary {
                 LinearGradient(
-                    colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
+                    colors: [Theme.Colors.accent, Theme.Colors.accentDeep],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 )
             } else {

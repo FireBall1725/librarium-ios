@@ -25,6 +25,10 @@ enum Theme {
         static let appBackground       = Color(hex: 0x0c0d12)
         static let appBackgroundEleva  = Color(hex: 0x16181f)
         static let appCard             = Color(hex: 0x1b1d25)
+        /// What the floating bar sits on. The mockup's `--app-bg-translucent`,
+        /// which the bar was approximating with its own hex and its own
+        /// opacity (librarium-ios-003).
+        static let appBackgroundTrans  = Color(hex: 0x16181f, opacity: 0.72)
 
         // Text — three tiers, no fourth shade
         static let appText             = Color(hex: 0xf1ede2)   // primary
@@ -39,12 +43,23 @@ enum Theme {
         static let accent              = Color(hex: 0x8089ff)
         static let accentStrong        = Color(hex: 0xaab1ff)
         static let accentSoft          = Color(red: 128/255, green: 137/255, blue: 255/255, opacity: 0.18)
+        /// The far end of every accent gradient, as `linear-gradient(160deg,
+        /// var(--accent), #5a64e8)` in the mockup. Five call sites had it as
+        /// a literal.
+        static let accentDeep          = Color(hex: 0x5a64e8)
 
         // Status — semantic, not decorative
         static let good                = Color(hex: 0x7bd6a8)   // read / success
         static let warn                = Color(hex: 0xffb866)   // overdue / caution
         static let bad                 = Color(hex: 0xff8a8a)   // destructive
         static let gold                = Color(hex: 0xf3c971)   // rating + admin badges
+        /// Books that are out on loan. A deeper amber than `warn`, which is
+        /// the mockup's own choice for the lent flag rather than drift — but
+        /// two ambers a shade apart for "caution" and "lent" is a design call
+        /// worth revisiting.
+        static let lent                = Color(hex: 0xf59e0b)
+        /// What reads on top of `lent`. Amber is too light to carry white.
+        static let lentInk             = Color(hex: 0x1a1306)
     }
 
     // MARK: - Type stack

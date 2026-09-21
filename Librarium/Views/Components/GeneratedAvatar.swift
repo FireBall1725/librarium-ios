@@ -78,7 +78,7 @@ struct GeneratedAvatar: View {
     /// text. These are all drawn from the app palette or sit beside it,
     /// so any account's avatar still looks like it belongs to Librarium.
     private static let pairs: [(Color, Color)] = [
-        (Color(hex: 0x8089ff), Color(hex: 0x5a64e8)),   // indigo, the house accent
+        (Color(hex: 0x8089ff), Theme.Colors.accentDeep),   // indigo, the house accent
         (Color(hex: 0x7bd6a8), Color(hex: 0x3f9c78)),   // green
         (Color(hex: 0xf3c971), Color(hex: 0xd09a3c)),   // gold
         (Color(hex: 0xff8a8a), Color(hex: 0xd4585f)),   // rose

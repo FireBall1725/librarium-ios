@@ -387,7 +387,7 @@ struct RedesignedSearchView: View {
             return ("Reading", Theme.Colors.accentStrong, Theme.Colors.accentSoft)
         }
         if let count = book.activeLoanCount, count > 0 {
-            return ("Lent", Color(hex: 0x1a1306), Color(hex: 0xf59e0b, opacity: 0.92))
+            return ("Lent", Theme.Colors.lentInk, Theme.Colors.lent.opacity(0.92))
         }
         return nil
     }

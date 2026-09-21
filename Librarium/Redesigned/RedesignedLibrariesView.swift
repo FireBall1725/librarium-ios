@@ -666,7 +666,7 @@ private struct LibraryCard: View {
                 pill(text: "Preferred", textColor: Theme.Colors.accentStrong, bg: Theme.Colors.accentSoft)
             }
             if library.isPublic {
-                pill(text: "Public", textColor: Theme.Colors.gold, bg: Color(hex: 0xf3c971, opacity: 0.15))
+                pill(text: "Public", textColor: Theme.Colors.gold, bg: Theme.Colors.gold.opacity(0.15))
             }
             if isKeptOffline {
                 offlinePill
