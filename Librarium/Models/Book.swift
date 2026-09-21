@@ -258,3 +258,43 @@ struct UserBookInteraction: Codable, Identifiable {
         updatedAt     = try c.decode(String.self,   forKey: .updatedAt)
     }
 }
+
+/// Someone else's opinion of a book, as the server is willing to share it.
+///
+/// A review is visible to everyone who shares the library; a note is not, and
+/// the query behind this does not select notes at all. Nothing here should
+/// ever be rendered as if it were the caller's own (librarium-ios-064).
+struct BookReader: Decodable, Identifiable, Hashable {
+    let userId: String
+    let displayName: String
+    let username: String
+    let readStatus: String
+    let rating: Double?
+    let isFavorite: Bool
+    let review: String
+    let startedAt: String?
+    let finishedAt: String?
+
+    var id: String { userId }
+
+    /// What to call them: the name they chose, falling back to the handle.
+    var name: String { displayName.isEmpty ? username : displayName }
+
+    enum CodingKeys: String, CodingKey {
+        case userId, displayName, username, readStatus, rating, isFavorite
+        case review, startedAt, finishedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        userId = try c.decodeIfPresent(String.self, forKey: .userId) ?? ""
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? ""
+        username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        readStatus = try c.decodeIfPresent(String.self, forKey: .readStatus) ?? "unread"
+        rating = try c.decodeIfPresent(Double.self, forKey: .rating)
+        isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        review = try c.decodeIfPresent(String.self, forKey: .review) ?? ""
+        startedAt = try c.decodeIfPresent(String.self, forKey: .startedAt)
+        finishedAt = try c.decodeIfPresent(String.self, forKey: .finishedAt)
+    }
+}

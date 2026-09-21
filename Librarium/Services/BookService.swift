@@ -173,6 +173,22 @@ struct BookService {
         try await client.put("/api/v1/books/\(bookId)/me", body: body)
     }
 
+    /// Everyone who shares a library with the caller and has said something
+    /// about this book. Private notes are never in here: the server does not
+    /// select them (librarium-ios-064).
+    func readers(bookId: String) async throws -> [BookReader] {
+        struct Page: Decodable {
+            let items: [BookReader]
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                items = try c.decodeIfPresent([BookReader].self, forKey: .items) ?? []
+            }
+            enum CodingKeys: String, CodingKey { case items }
+        }
+        let page: Page = try await client.get("/api/v1/books/\(bookId)/readers")
+        return page.items
+    }
+
     // MARK: - Book shelves / series
 
     func shelves(libraryId: String, bookId: String) async throws -> [Shelf] {
