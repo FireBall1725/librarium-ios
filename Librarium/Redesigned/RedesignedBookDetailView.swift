@@ -10,11 +10,11 @@ import SwiftUI
 /// over a quick-actions row, then conditionally a currently-lent panel,
 /// description, edition stats, series, and reading-history snapshot.
 ///
-/// The Rate / Review / Re-read sheets in the mockup are deferred to a
-/// later pass (mockup card 29 + 30); the quick-action buttons are shown
-/// for visual completeness with a stub alert for v1. The Loan button
-/// wires into the existing `AddEditLoanSheet` until that gets its own
-/// rebuild (card 33).
+/// Every quick action goes somewhere now: Progress and Rate to their own
+/// sheets, Review to one that keeps a public review and a private note
+/// apart, and Loan either to `AddEditLoanSheet` with this book already
+/// chosen or to taking it back, depending on whether it is out. The lend
+/// sheet still wears its pre-redesign form; that is card 33.
 struct RedesignedBookDetailView: View {
     let library: Library
     let book: Book
@@ -70,10 +70,14 @@ struct RedesignedBookDetailView: View {
     @State private var showDeleteConfirm = false
     @State private var showClearCoverConfirm = false
     @State private var showCoverCapture = false
-    @State private var showActionStub = false
-    @State private var actionStubLabel = ""
+    /// A failure with nowhere better to go. Both quick-action stubs are gone,
+    /// so what is left is an error rather than a promise of a later pass.
+    @State private var showActionError = false
+    @State private var actionErrorMessage = ""
     @State private var showRateSheet = false
     @State private var showReviewSheet = false
+    @State private var showLendSheet = false
+    @State private var confirmReturn = false
     /// Everyone else who has said something about this book. Loaded with the
     /// rest of the detail; empty on a single-user instance, which is most of
     /// them (librarium-ios-064).
@@ -254,6 +258,20 @@ struct RedesignedBookDetailView: View {
                 Task { await applyRating(newRawRating) }
             }
         }
+        .sheet(isPresented: $showLendSheet) {
+            AddEditLoanSheet(library: library, preselectedBook: currentBook) { _ in
+                showLendSheet = false
+                Task { await loadActiveLoan() }
+            }
+            .environment(appState)
+        }
+        .confirmationDialog("Mark returned?",
+                            isPresented: $confirmReturn, titleVisibility: .visible) {
+            Button("Mark returned") { Task { await markCurrentLoanReturned() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(activeLoan.map { "\($0.loanedTo) has it. \(loanDateLine(loan: $0))." } ?? "")
+        }
         .sheet(isPresented: $showReviewSheet) {
             ReviewSheet(
                 initialReview: myBook?.review ?? "",
@@ -284,10 +302,10 @@ struct RedesignedBookDetailView: View {
                 }
             )
         }
-        .alert(actionStubLabel, isPresented: $showActionStub) {
+        .alert("Didn't work", isPresented: $showActionError) {
             Button("OK") { }
         } message: {
-            Text("This action gets its own redesigned sheet in a later pass.")
+            Text(actionErrorMessage)
         }
         .sheet(isPresented: $showCoverCapture) {
             CoverCaptureSheet(
@@ -1151,8 +1169,12 @@ struct RedesignedBookDetailView: View {
             qa(icon: "book.pages.fill", label: "Progress") { showProgressSheet = true }
             qa(icon: "star.fill", label: "Rate")    { showRateSheet = true }
             qa(icon: "bubble.left.fill", label: "Review") { showReviewSheet = true }
-            qa(icon: "arrow.up.arrow.down.circle.fill", label: "Loan") {
-                stub("Loan")
+            // Lend it, or take it back. One button because a book is either
+            // out or it is not, and the panel under this row already says
+            // which (librarium-ios-121, -122).
+            qa(icon: "arrow.up.arrow.down.circle.fill",
+               label: activeLoan == nil ? "Lend" : "Returned") {
+                if activeLoan == nil { showLendSheet = true } else { confirmReturn = true }
             }
         }
         .padding(.horizontal, 22)
@@ -1178,9 +1200,14 @@ struct RedesignedBookDetailView: View {
         .buttonStyle(.plain)
     }
 
-    private func stub(_ label: String) {
-        actionStubLabel = label
-        showActionStub = true
+    /// Take the book back, from the quick action rather than the panel. The
+    /// panel's own button does the same thing; this is the one your thumb is
+    /// already near.
+    private func markCurrentLoanReturned() async {
+        guard let loan = activeLoan else { return }
+        let client = appState.makeClient(serverURL: library.serverURL)
+        _ = try? await LoanService(client: client).markReturned(libraryId: library.id, loanId: loan.id)
+        await loadActiveLoan()
     }
 
     // MARK: - Currently lent panel
@@ -1662,8 +1689,8 @@ struct RedesignedBookDetailView: View {
             coverCacheBuster += 1
             await loadDetail()
         } catch {
-            actionStubLabel = error.localizedDescription
-            showActionStub = true
+            actionErrorMessage = error.localizedDescription
+            showActionError = true
         }
     }
 

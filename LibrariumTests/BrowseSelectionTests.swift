@@ -461,3 +461,53 @@ final class AuthorSortTests: XCTestCase {
         XCTAssertEqual(once, twice, "re-sorting a sorted list must not shuffle it")
     }
 }
+
+/// Loans dropped tags in April 2026. A required `tags` on the model meant
+/// every loan failed to decode, including the one the lend sheet had just
+/// created, so the sheet reported a server error over a loan that existed.
+@MainActor
+final class LoanDecodingTests: XCTestCase {
+
+    private func decoder() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return d
+    }
+
+    func testALoanDecodesWithoutATagsField() throws {
+        // Copied from what the running server answers.
+        let json = Data("""
+        {
+          "id": "87dc8c80-ee64-4649-b182-44dff57566f5",
+          "library_id": "b512f4da-579b-4775-ab51-d0117ea73705",
+          "book_id": "0d0a51e4-0685-4c34-9492-0c2dd1d04bb1",
+          "book_title": "A Beautifully Foolish Endeavor",
+          "loaned_to": "Test borrower",
+          "loaned_at": "2026-09-21",
+          "due_date": null,
+          "returned_at": null,
+          "notes": "",
+          "created_at": "2026-09-20T23:05:01.830846-04:00",
+          "updated_at": "2026-09-20T23:05:01.830846-04:00"
+        }
+        """.utf8)
+
+        let loan = try decoder().decode(Loan.self, from: json)
+        XCTAssertEqual(loan.loanedTo, "Test borrower")
+        XCTAssertTrue(loan.isActive, "a loan with no returned_at is still out")
+        XCTAssertFalse(loan.isOverdue, "a loan with no due date is never overdue")
+    }
+
+    func testAReturnedLoanIsNotActive() throws {
+        let json = Data("""
+        {
+          "id": "1", "library_id": "2", "book_id": "3", "book_title": "X",
+          "loaned_to": "Someone", "loaned_at": "2026-09-01",
+          "returned_at": "2026-09-10", "notes": "",
+          "created_at": "2026-09-01T00:00:00Z", "updated_at": "2026-09-10T00:00:00Z"
+        }
+        """.utf8)
+        let loan = try decoder().decode(Loan.self, from: json)
+        XCTAssertFalse(loan.isActive)
+    }
+}

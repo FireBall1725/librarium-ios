@@ -3,6 +3,10 @@ import SwiftUI
 struct AddEditLoanSheet: View {
     let library: Library
     var loan: Loan? = nil
+    /// The book to lend, when the sheet was opened from that book rather than
+    /// from the loans list. Skips the search: somebody who tapped Loan on a
+    /// page has already answered "which book" (librarium-ios-121).
+    var preselectedBook: Book? = nil
     let onSave: (Loan) -> Void
 
     @Environment(AppState.self) private var appState
@@ -24,7 +28,7 @@ struct AddEditLoanSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if loan == nil {
+                if loan == nil, preselectedBook == nil {
                     Section("Book") {
                         if let book = selectedBook {
                             HStack {
@@ -85,6 +89,7 @@ struct AddEditLoanSheet: View {
                 }
             }
             .onAppear {
+                if let preselectedBook { selectedBook = preselectedBook }
                 if let l = loan {
                     loanedTo = l.loanedTo; notes = l.notes
                     if let d = l.dueDate, !d.isEmpty, let parsed = iso.date(from: d) {
