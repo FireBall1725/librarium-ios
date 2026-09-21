@@ -1153,24 +1153,11 @@ struct RedesignedScanResultView: View {
                         }
                     }
                 } else if let librariesError {
-                    HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Theme.Colors.warn)
-                        Text(librariesError)
-                            .font(Theme.Fonts.ui(12, weight: .medium))
-                            .foregroundStyle(Theme.Colors.appText2)
-                            .lineLimit(2)
-                    }
-                    .padding(14)
+                    InlineBanner(tone: .warn, title: librariesError)
+                        .padding(14)
                 } else {
-                    HStack {
-                        ProgressView().tint(Theme.Colors.appText3)
-                        Text("Loading libraries…")
-                            .font(Theme.Fonts.ui(12, weight: .medium))
-                            .foregroundStyle(Theme.Colors.appText3)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
+                    LoadingRow(label: "Loading libraries…")
+                        .padding(.horizontal, 14)
                 }
             }
             .background(

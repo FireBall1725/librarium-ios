@@ -1036,20 +1036,7 @@ struct RedesignedBookDetailView: View {
     @ViewBuilder
     private func ratingLine(rating: Double) -> some View {
         HStack(spacing: 6) {
-            HStack(spacing: 1) {
-                ForEach(1...5, id: \.self) { i in
-                    let halfValue = Double(i) - 0.5
-                    let fullValue = Double(i)
-                    let iconName: String = {
-                        if rating >= fullValue { return "star.fill" }
-                        if rating >= halfValue { return "star.leadinghalf.filled" }
-                        return "star"
-                    }()
-                    Image(systemName: iconName)
-                        .font(.system(size: 12))
-                }
-            }
-            .foregroundStyle(Theme.Colors.gold)
+            StarRow(rating: rating)
             Text(rating.formatted(.number.precision(.fractionLength(1))))
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(Theme.Colors.gold)

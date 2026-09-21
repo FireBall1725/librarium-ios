@@ -70,11 +70,7 @@ struct RedesignedRateSheet: View {
         let halfValue = index * 2 - 1
         let fullValue = index * 2
 
-        let iconName: String = {
-            if selectedRaw >= fullValue { return "star.fill" }
-            if selectedRaw >= halfValue { return "star.leadinghalf.filled" }
-            return "star"
-        }()
+        let iconName = StarRow.symbol(for: index, rating: Double(selectedRaw) / 2)
 
         ZStack {
             Image(systemName: iconName)

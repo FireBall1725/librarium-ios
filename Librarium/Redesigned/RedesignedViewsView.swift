@@ -148,12 +148,13 @@ struct RedesignedViewsView: View {
                 .padding(.bottom, 8)
 
             if let error {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(Theme.Fonts.ui(13))
-                    .foregroundStyle(Theme.Colors.warn)
+                InlineBanner(tone: .warn, title: "Couldn't load your views", detail: error)
+                    .padding(.horizontal, 22)
+            } else if isLoading && views.isEmpty {
+                LoadingRow(label: "Loading…")
                     .padding(.horizontal, 22)
             } else if views.isEmpty {
-                Text(isLoading ? "Loading…" : empty)
+                Text(empty)
                     .font(Theme.Fonts.ui(13))
                     .foregroundStyle(Theme.Colors.appText3)
                     .fixedSize(horizontal: false, vertical: true)
