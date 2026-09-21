@@ -3,7 +3,7 @@
 
 import SwiftUI
 
-/// 5-slot redesigned app shell: Home · Collection · [Scan] · Views · Profile.
+/// 5-slot redesigned app shell: Home · Collection · [Scan] · Views · Search.
 ///
 /// Implementation notes:
 ///
@@ -19,8 +19,11 @@ import SwiftUI
 ///   rail. Views carries the saved filters plus the surfaces that are
 ///   not the collection: loans, suggestions and the libraries.
 ///
-/// - Profile is a tab rather than a sheet off the Home avatar; the
-///   avatar switches to it through `\.selectTab`.
+/// - Search holds the fifth slot rather than Profile. Searching is what
+///   a reader does several times a visit; the account is a screen they
+///   open when something needs changing, which is why the web client
+///   keeps it at the foot of the rail and not in the nav. Profile is a
+///   push off the Home avatar.
 ///
 /// - The center Scan FAB opens `RedesignedScanFlow` as a fullScreenCover.
 struct RedesignedAppShell: View {
@@ -77,9 +80,9 @@ struct RedesignedAppShell: View {
                     .opacity(selectedTab == .views ? 1 : 0)
                     .allowsHitTesting(selectedTab == .views)
 
-                RedesignedProfileView()
-                    .opacity(selectedTab == .profile ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .profile)
+                RedesignedSearchView()
+                    .opacity(selectedTab == .search ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .search)
             }
             // Rebuilt from scratch when the collection changes. Every tab holds
             // its own loaded books, counts, filters and navigation stack, and
@@ -112,7 +115,6 @@ struct RedesignedAppShell: View {
             SourcePickerView(onCancel: { showSourcePicker = false })
         }
         .environment(\.switchSource, { showSourcePicker = true })
-        .environment(\.selectTab, { selectedTab = $0 })
         .fullScreenCover(isPresented: $showScan) {
             RedesignedScanFlow(
                 onClose: { showScan = false },
@@ -140,20 +142,7 @@ struct RedesignedAppShell: View {
 // MARK: - Tab identity
 
 enum AppTab: Hashable {
-    case home, collection, views, profile
-}
-
-/// Switching tabs from inside one of them: the Home avatar opens Profile,
-/// which is a tab now rather than a sheet it could present itself.
-private struct SelectTabKey: EnvironmentKey {
-    static let defaultValue: (AppTab) -> Void = { _ in }
-}
-
-extension EnvironmentValues {
-    var selectTab: (AppTab) -> Void {
-        get { self[SelectTabKey.self] }
-        set { self[SelectTabKey.self] = newValue }
-    }
+    case home, collection, views, search
 }
 
 /// Detail views advertise the tab they "logically belong to" via this
@@ -195,7 +184,7 @@ private struct EditorialTabBar: View {
             tab(.collection, icon: "books.vertical.fill", label: "Collection")
             scanFAB
             tab(.views,      icon: "bookmark.fill",      label: "Views")
-            tab(.profile,    icon: "person.crop.circle", label: "Profile")
+            tab(.search,     icon: "magnifyingglass",    label: "Search")
         }
         .padding(.horizontal, 12)
         .frame(width: 320, height: 64)

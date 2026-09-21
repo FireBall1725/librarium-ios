@@ -43,7 +43,6 @@ struct RedesignedBrowseView: View {
     @State private var libraries: [String: Library] = [:]
     @State private var searchTask: Task<Void, Never>?
     @State private var showFilters = false
-    @State private var showSearch = false
     @State private var selected: BookOpenRequest?
     @State private var selectedGroup: AuthorSelection?
     @State private var reauthAccount: ServerAccount?
@@ -160,9 +159,6 @@ struct RedesignedBrowseView: View {
             }
             .onChange(of: vm.sort) { _, _ in reload() }
             .onChange(of: openBookID.wrappedValue) { _, _ in pushScannedBook() }
-            .sheet(isPresented: $showSearch) {
-                RedesignedSearchView()
-            }
             .sheet(item: $reauthAccount) { account in
                 ReauthSheet(account: account)
             }
@@ -209,7 +205,6 @@ struct RedesignedBrowseView: View {
             // aim at. Sort and filter stay out because they are used on almost
             // every visit; the surfaces you cross to occasionally go behind
             // the overflow, which is where the web page puts them too.
-            if isRoot { searchEverythingButton }
             if isRoot && !vm.isLocal && canSaveView { saveViewButton }
             if !vm.isLocal { groupButton }
             sortMenu
@@ -316,25 +311,6 @@ struct RedesignedBrowseView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(on ? "Grouped by series" : "Group by series")
-        .padding(.bottom, 4)
-    }
-
-    /// Everything, not just this shelf: the cross-type search over books,
-    /// runs and people. Authors, Loans, Suggestions and Libraries used to sit
-    /// behind this same overflow; they are tabs and segments now, so the one
-    /// destination with nowhere else to be keeps the slot (librarium-ios-001).
-    @ViewBuilder
-    private var searchEverythingButton: some View {
-        Button { showSearch = true } label: {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Theme.Colors.appText2)
-                .frame(width: 38, height: 38)
-                .background(Color.white.opacity(0.06), in: Circle())
-                .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Search everything")
         .padding(.bottom, 4)
     }
 

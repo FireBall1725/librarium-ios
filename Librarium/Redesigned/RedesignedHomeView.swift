@@ -359,7 +359,6 @@ final class RedesignedHomeViewModel {
 
 struct RedesignedHomeView: View {
     @Environment(AppState.self) private var appState
-    @Environment(\.selectTab) private var selectTab
     @Environment(\.switchSource) private var switchSource
     @Environment(\.modelContext) private var modelContext
 
@@ -449,14 +448,16 @@ struct RedesignedHomeView: View {
                 greetingLockup
             }
             Spacer()
-            // Profile avatar — tap to go to the Profile tab. It used to
-            // present profile as a sheet, which made the same screen a sheet
-            // here and a destination everywhere else (librarium-ios-001).
+            // Profile avatar — pushes the profile onto this stack. It used
+            // to present it as a sheet, which gave the same screen a close
+            // button here and a back button everywhere else, and the fifth
+            // tab slot is worth more to search than to a settings screen
+            // (librarium-ios-001).
             // We don't store user avatar images yet, so the circle is an
             // accent-gradient with the first initial of the primary
             // user's display name. When avatar uploads land, this is the
             // single place to swap to a real image.
-            Button { selectTab(.profile) } label: {
+            NavigationLink { RedesignedProfileView() } label: {
                 profileAvatar
             }
             .buttonStyle(.plain)
