@@ -4,17 +4,67 @@
 import Foundation
 
 /// The controlled lists the server owns: edition formats, contributor roles,
-/// copy conditions, identifier schemes.
+/// copy conditions, identifier schemes, plus the open vocabularies of genres
+/// and tags.
 ///
-/// Codes only, no display names. A label stored in the database cannot be
-/// translated and cannot be corrected without a migration, so the server sends
-/// what a thing *is* and the client decides what to call it.
+/// The closed lists are codes only, no display names. A label stored in the
+/// database cannot be translated and cannot be corrected without a migration,
+/// so the server sends what a thing *is* and the client decides what to call
+/// it. Genres and tags are the other kind: rows somebody named, which come
+/// back with their names.
 struct VocabularyService {
     let client: APIClient
 
     func editionFormats() async throws -> [VocabularyTerm] {
         let page: VocabularyPage = try await client.get("/api/v1/edition-formats")
         return page.items.filter(\.isActive)
+    }
+
+    /// Every genre the instance knows, whether or not a book uses it.
+    ///
+    /// The facet list answers a different question — what is on the shelf —
+    /// and filing a book under a genre nobody owns yet is exactly the case it
+    /// cannot cover. Nothing on iOS called this, which is why a scanned book
+    /// arrived with no genres however many the metadata sources knew
+    /// (librarium-ios-033).
+    func genres() async throws -> [Genre] {
+        try await client.get("/api/v1/genres")
+    }
+
+    /// Tags across every library the caller can read, narrowed by `query`.
+    /// A tag with the same name in two libraries comes back twice, marked
+    /// ambiguous, because they are two tags.
+    func tags(query: String = "") async throws -> [MeTag] {
+        guard !query.isEmpty,
+              let enc = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+        else { return try await client.get("/api/v1/me/tags") }
+        return try await client.get("/api/v1/me/tags?q=\(enc)")
+    }
+}
+
+/// A tag, with the library it belongs to.
+struct MeTag: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let libraryId: String
+    let libraryName: String
+    /// True when another library has a tag by the same name, so a picker knows
+    /// to say which library this one is from.
+    let ambiguous: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, ambiguous
+        case libraryId = "library_id"
+        case libraryName = "library_name"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        libraryId = try c.decodeIfPresent(String.self, forKey: .libraryId) ?? ""
+        libraryName = try c.decodeIfPresent(String.self, forKey: .libraryName) ?? ""
+        ambiguous = try c.decodeIfPresent(Bool.self, forKey: .ambiguous) ?? false
     }
 }
 

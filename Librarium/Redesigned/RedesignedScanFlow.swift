@@ -726,6 +726,11 @@ struct RedesignedScanResultView: View {
     /// taps to toggle membership; the IDs ride along on the create.
     @State private var libraryTags: [Tag] = []
     @State private var selectedTagIDs: Set<String> = []
+    /// The instance's genres, and the ones this book will be filed under.
+    /// Pre-ticked from whatever the metadata sources called it, so the common
+    /// case is confirming rather than typing (librarium-ios-033).
+    @State private var genres: [Genre] = []
+    @State private var selectedGenreIDs: Set<String> = []
     @State private var isAdding = false
     @State private var addError: String?
     @State private var addedSuccess = false
@@ -882,6 +887,14 @@ struct RedesignedScanResultView: View {
            let terms = try? await VocabularyService(client: client).editionFormats(),
            !terms.isEmpty {
             formatsByServer[library.serverURL] = terms.sorted { $0.sortOrder < $1.sortOrder }
+        }
+
+        // One list for the whole instance, so it is fetched once rather than
+        // per library, and the pre-selection is made from the lookup's own
+        // words the first time it arrives.
+        if genres.isEmpty, let all = try? await VocabularyService(client: client).genres(), !all.isEmpty {
+            genres = all.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            applyGenreDefaults()
         }
 
         // Tags are per-library — always re-fetch on library change.
@@ -1386,6 +1399,7 @@ struct RedesignedScanResultView: View {
             if moreOpen {
                 VStack(alignment: .leading, spacing: 14) {
                     formatGroup
+                    genresGroup
                     tagsGroup
                 }
                 .padding(.top, 6)
@@ -1399,7 +1413,31 @@ struct RedesignedScanResultView: View {
     private var moreSummary: String {
         let formatLabel = EditionFormatLabels.label(selectedFormat)
         let tagBit = selectedTagIDs.isEmpty ? "no tags" : "\(selectedTagIDs.count) tag\(selectedTagIDs.count == 1 ? "" : "s")"
-        return "\(formatLabel) · \(tagBit)"
+        let genreBit = selectedGenreIDs.isEmpty
+            ? "no genres"
+            : "\(selectedGenreIDs.count) genre\(selectedGenreIDs.count == 1 ? "" : "s")"
+        return "\(formatLabel) · \(genreBit) · \(tagBit)"
+    }
+
+    /// Pre-tick the genres the metadata sources named, once both halves are
+    /// in hand. The list and the lookup arrive from different requests in
+    /// whichever order the network decides, and doing this only on the genre
+    /// side meant the common case — the list landing first — pre-ticked
+    /// nothing at all.
+    private func applyGenreDefaults() {
+        guard selectedGenreIDs.isEmpty, !genres.isEmpty else { return }
+        selectedGenreIDs = Self.genresMatching(lookup?.categories ?? [], in: genres)
+    }
+
+    /// Match what the providers called this book against the instance's own
+    /// genre list, by name and case-insensitively. A source saying "Juvenile
+    /// Fiction" when the instance calls it "Children's" matches nothing, and
+    /// that is the right answer: inventing a genre row from a provider string
+    /// is how a vocabulary turns into a junk drawer.
+    static func genresMatching(_ categories: [String], in genres: [Genre]) -> Set<String> {
+        guard !categories.isEmpty else { return [] }
+        let wanted = Set(categories.map { $0.lowercased().trimmingCharacters(in: .whitespaces) })
+        return Set(genres.filter { wanted.contains($0.name.lowercased()) }.map(\.id))
     }
 
     @ViewBuilder
@@ -1415,6 +1453,42 @@ struct RedesignedScanResultView: View {
                     chipButton(label: EditionFormatLabels.label(f.code),
                                active: selectedFormat == f.code) {
                         selectedFormat = f.code
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var genresGroup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Genres")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.Colors.appText2)
+            if genres.isEmpty {
+                Text("No genres configured on this server yet.")
+                    .font(Theme.Fonts.ui(12, weight: .medium))
+                    .foregroundStyle(Theme.Colors.appText3)
+            } else {
+                // Ticked first, so a pre-selection made from the lookup is
+                // visible without scrolling a list of thirty-three.
+                let ordered = genres.sorted { a, b in
+                    let (l, r) = (selectedGenreIDs.contains(a.id), selectedGenreIDs.contains(b.id))
+                    if l != r { return l }
+                    return a.name.localizedStandardCompare(b.name) == .orderedAscending
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(ordered) { genre in
+                            chipButton(label: genre.name,
+                                       active: selectedGenreIDs.contains(genre.id)) {
+                                if selectedGenreIDs.contains(genre.id) {
+                                    selectedGenreIDs.remove(genre.id)
+                                } else {
+                                    selectedGenreIDs.insert(genre.id)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1645,6 +1719,7 @@ struct RedesignedScanResultView: View {
         switch result {
         case .success(let payload):
             lookup = payload
+            applyGenreDefaults()
         case .notFound:
             lookupError = "No results for \(isbn)."
         case .noSourceHasIt:
@@ -1830,7 +1905,7 @@ struct RedesignedScanResultView: View {
             description: lookup.description,
             contributors: [],
             tagIds: Array(selectedTagIDs),
-            genreIds: [],
+            genreIds: Array(selectedGenreIDs),
             edition: edition
         )
 
@@ -1936,7 +2011,14 @@ struct RedesignedScanResultView: View {
             do {
                 let results = try await LookupService(client: client).isbn(isbn)
                 serverAnswered = true
-                if let match = results.first(where: { !$0.title.isEmpty }) {
+                // Merged rather than "whichever source answered first with a
+                // title". One provider knows the page count, another the
+                // categories, and taking one whole answer threw the rest away:
+                // Hardcover wins on title and carries no categories at all, so
+                // every book scanned against a server arrived with no genres
+                // (librarium-ios-033).
+                let named = results.filter { !$0.title.isEmpty }
+                if let match = LiteMetadataAggregator.merge(named) {
                     return .success(match)
                 }
             } catch {

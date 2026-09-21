@@ -392,3 +392,72 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertTrue(wrong.ownership.isEmpty)
     }
 }
+
+/// Pre-ticking a scanned book's genres from what the metadata sources called
+/// it. The rule is deliberately strict, so the test is about what it refuses
+/// as much as what it matches.
+@MainActor
+final class GenreMatchingTests: XCTestCase {
+
+    private func genres(_ names: [String]) throws -> [Genre] {
+        let rows = names.enumerated().map { ["id": "g\($0.offset)", "name": $0.element] }
+        let json = try JSONSerialization.data(withJSONObject: rows)
+        return try JSONDecoder().decode([Genre].self, from: json)
+    }
+
+    func testMatchesRegardlessOfCaseAndSurroundingSpace() throws {
+        let all = try genres(["Fantasy", "Science Fiction", "Manga"])
+        let picked = RedesignedScanResultView.genresMatching(["  fantasy ", "MANGA"], in: all)
+        XCTAssertEqual(picked, ["g0", "g2"])
+    }
+
+    func testRefusesAGenreTheInstanceDoesNotHave() throws {
+        let all = try genres(["Children's", "Fantasy"])
+        // A provider's own vocabulary, which is not this instance's.
+        let picked = RedesignedScanResultView.genresMatching(["Juvenile Fiction"], in: all)
+        XCTAssertTrue(picked.isEmpty, "a provider string is not a licence to invent a genre row")
+    }
+
+    func testNoCategoriesPicksNothing() throws {
+        let all = try genres(["Fantasy"])
+        XCTAssertTrue(RedesignedScanResultView.genresMatching([], in: all).isEmpty)
+    }
+}
+
+/// The authors list is unpaged and sorted on the phone, so the order is this
+/// app's answer rather than the server's. Ties are the interesting part.
+@MainActor
+final class AuthorSortTests: XCTestCase {
+
+    private func authors(_ pairs: [(String, Int)]) throws -> [AuthorIndexEntry] {
+        let rows = pairs.map { name, count in
+            ["id": name, "name": name, "sort_name": name, "book_count": count, "read_count": 0]
+        }
+        let json = try JSONSerialization.data(withJSONObject: rows)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode([AuthorIndexEntry].self, from: json)
+    }
+
+    func testByNameIsAlphabeticalOnTheSortName() throws {
+        let list = try authors([("Tolkien", 3), ("Asimov", 9), ("Le Guin", 5)])
+        let sorted = AuthorsViewModel.ordered(list, by: .name).map(\.name)
+        XCTAssertEqual(sorted, ["Asimov", "Le Guin", "Tolkien"])
+    }
+
+    func testByCountIsLargestFirst() throws {
+        let list = try authors([("Tolkien", 3), ("Asimov", 9), ("Le Guin", 5)])
+        let sorted = AuthorsViewModel.ordered(list, by: .count).map(\.name)
+        XCTAssertEqual(sorted, ["Asimov", "Le Guin", "Tolkien"])
+    }
+
+    func testEqualCountsKeepAStableAlphabeticalOrder() throws {
+        let list = try authors([("Tolkien", 4), ("Asimov", 4), ("Le Guin", 4)])
+        let once = AuthorsViewModel.ordered(list, by: .count).map(\.name)
+        let twice = AuthorsViewModel.ordered(once.map { name in
+            list.first { $0.name == name }!
+        }, by: .count).map(\.name)
+        XCTAssertEqual(once, ["Asimov", "Le Guin", "Tolkien"])
+        XCTAssertEqual(once, twice, "re-sorting a sorted list must not shuffle it")
+    }
+}
