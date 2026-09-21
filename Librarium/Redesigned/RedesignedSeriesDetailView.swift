@@ -48,7 +48,7 @@ struct RedesignedSeriesDetailView: View {
         .toolbar(.hidden, for: .navigationBar)
         // Light up the Series tab on the floating bar regardless of
         // which tab the user navigated from.
-        .preference(key: LogicalTabPreferenceKey.self, value: AppTab.series)
+        .preference(key: LogicalTabPreferenceKey.self, value: AppTab.collection)
         .task {
             await vm.load(
                 library: library, series: series,

@@ -15,7 +15,6 @@ import SwiftUI
 /// changes, accessible via the "Manage primary server" row.
 struct RedesignedProfileView: View {
     @Environment(AppState.self) private var appState
-    @Environment(\.dismiss) private var dismiss
 
     @State private var vm = RedesignedProfileViewModel()
     @State private var showAddServer = false
@@ -139,18 +138,6 @@ struct RedesignedProfileView: View {
                 }
             }
             Spacer()
-            // Close button — Profile is presented as a sheet from the
-            // Home tab's avatar; without an explicit dismiss, users
-            // who don't notice the swipe-down handle are stuck.
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.Colors.appText)
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.06), in: Circle())
-                    .overlay(Circle().stroke(Theme.Colors.appLine, lineWidth: 0.5))
-            }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 22)
         .padding(.top, 30)

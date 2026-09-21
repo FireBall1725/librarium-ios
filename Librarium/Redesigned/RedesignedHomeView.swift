@@ -365,7 +365,6 @@ struct RedesignedHomeView: View {
     @State private var vm = RedesignedHomeViewModel()
     @State private var pendingDetail: BookDetailRequest?
     @State private var loadedDetail: BookDetailLoaded?
-    @State private var showProfile = false
     /// Coalesces bursts of Lite write notifications into one reload.
     @State private var liteReloadTask: Task<Void, Never>?
     @State private var reauthAccount: ServerAccount?
@@ -429,10 +428,6 @@ struct RedesignedHomeView: View {
             .navigationDestination(item: $loadedDetail) { detail in
                 RedesignedBookDetailView(library: detail.library, book: detail.book)
             }
-            .sheet(isPresented: $showProfile) {
-                RedesignedProfileView()
-                    .presentationDragIndicator(.visible)
-            }
             .alert("Error", isPresented: Binding(get: { vm.error != nil }, set: { if !$0 { vm.error = nil } })) {
                 Button("OK") { vm.error = nil }
             } message: { Text(vm.error ?? "") }
@@ -453,12 +448,16 @@ struct RedesignedHomeView: View {
                 greetingLockup
             }
             Spacer()
-            // Profile avatar — tap to open the redesigned profile sheet.
+            // Profile avatar — pushes the profile onto this stack. It used
+            // to present it as a sheet, which gave the same screen a close
+            // button here and a back button everywhere else, and the fifth
+            // tab slot is worth more to search than to a settings screen
+            // (librarium-ios-001).
             // We don't store user avatar images yet, so the circle is an
             // accent-gradient with the first initial of the primary
             // user's display name. When avatar uploads land, this is the
             // single place to swap to a real image.
-            Button { showProfile = true } label: {
+            NavigationLink { RedesignedProfileView() } label: {
                 profileAvatar
             }
             .buttonStyle(.plain)

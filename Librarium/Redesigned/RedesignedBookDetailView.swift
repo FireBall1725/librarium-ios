@@ -182,7 +182,7 @@ struct RedesignedBookDetailView: View {
         // Light up the Library tab on the floating bar regardless of
         // which tab the user navigated from (Search results, Home
         // strip, Library books grid, etc).
-        .preference(key: LogicalTabPreferenceKey.self, value: AppTab.books)
+        .preference(key: LogicalTabPreferenceKey.self, value: AppTab.collection)
         .task { await loadDetail() }
         .sheet(isPresented: $showEdit) {
             if isLocalLibrary, let accountID = localAccountID {

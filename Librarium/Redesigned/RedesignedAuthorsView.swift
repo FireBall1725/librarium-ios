@@ -14,6 +14,12 @@ import SwiftUI
 /// No alphabet bar. It assumes a Latin script and one letter per name, and both
 /// are wrong for a collection with Japanese credits in it.
 struct RedesignedAuthorsView: View {
+    /// Which face of the collection is showing. Nil when this list is pushed
+    /// on its own rather than shown as a segment.
+    var surface: Binding<CollectionSurface>?
+    /// Whether this surface is the one on screen.
+    var isActive = true
+
     @Environment(AppState.self) private var appState
 
     @State private var vm = AuthorsViewModel()
@@ -21,11 +27,24 @@ struct RedesignedAuthorsView: View {
     @State private var selected: AuthorSelection?
 
     var body: some View {
+        if surface == nil {
+            content
+        } else {
+            NavigationStack { content }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         ZStack {
             Theme.Colors.appBackground.ignoresSafeArea()
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    if let surface {
+                        CollectionSegments(surface: surface)
+                            .padding(.top, 14)
+                    }
                     header
                     searchPill
                     roleRow
@@ -35,10 +54,16 @@ struct RedesignedAuthorsView: View {
             }
             .scrollIndicators(.hidden)
         }
+        // As a segment this is a tab root and draws its own header, so the
+        // navigation bar would only repeat the segment's name.
+        .toolbar(surface == nil ? .visible : .hidden, for: .navigationBar)
         .navigationTitle("Authors")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            guard vm.authors.isEmpty else { return }
+        // Keyed the same way the other surfaces are: loading at launch means
+        // asking before the reader has signed back in, and the empty answer
+        // then sticks for the session.
+        .task(id: loadKey) {
+            guard isActive, vm.authors.isEmpty else { return }
             await vm.load(appState: appState)
         }
         .refreshable { await vm.load(appState: appState) }
@@ -51,6 +76,11 @@ struct RedesignedAuthorsView: View {
                 initialTitle: pick.name
             )
         }
+    }
+
+    private var loadKey: String {
+        let accounts = appState.accounts.map { "\($0.id):\($0.needsReauth)" }.joined(separator: ",")
+        return "\(isActive)|\(accounts)"
     }
 
     // MARK: - Header
