@@ -259,7 +259,7 @@ struct CornerStatusFlag: View {
         switch status {
         case "read":           return Style(color: Color(hex: 0x22c55e), icon: "checkmark")
         case "reading":        return Style(color: Color(hex: 0x3b82f6), icon: "book.fill")
-        case "did_not_finish": return Style(color: Color(hex: 0xf59e0b), icon: "xmark")
+        case "did_not_finish": return Style(color: Theme.Colors.lent, icon: "xmark")
         default:               return nil
         }
     }

@@ -833,10 +833,10 @@ struct BookTile: View {
         Text("Lent")
             .font(.system(size: 9, weight: .bold))
             .tracking(0.6)
-            .foregroundStyle(Color(hex: 0x1a1306))
+            .foregroundStyle(Theme.Colors.lentInk)
             .padding(.horizontal, 7)
             .padding(.vertical, 4)
-            .background(Color(hex: 0xf59e0b, opacity: 0.92), in: RoundedRectangle(cornerRadius: 6))
+            .background(Theme.Colors.lent.opacity(0.92), in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder

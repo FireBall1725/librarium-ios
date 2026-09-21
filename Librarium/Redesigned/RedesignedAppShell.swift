@@ -193,7 +193,7 @@ private struct EditorialTabBar: View {
                 .fill(.ultraThinMaterial)
                 .overlay(
                     RoundedRectangle(cornerRadius: 32)
-                        .fill(Color(hex: 0x1c1e26, opacity: 0.66))
+                        .fill(Theme.Colors.appBackgroundTrans)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 32)
@@ -245,7 +245,7 @@ private struct EditorialTabBar: View {
                 .frame(width: 56, height: 56)
                 .background(
                     Circle().fill(LinearGradient(
-                        colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
+                        colors: [Theme.Colors.accent, Theme.Colors.accentDeep],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     ))
                 )

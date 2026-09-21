@@ -452,7 +452,7 @@ private struct ManualEntrySheet: View {
                     .padding(.vertical, 10)
                     .background(
                         Capsule().fill(LinearGradient(
-                            colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
+                            colors: [Theme.Colors.accent, Theme.Colors.accentDeep],
                             startPoint: .topLeading, endPoint: .bottomTrailing
                         ))
                     )
@@ -996,7 +996,7 @@ struct RedesignedScanResultView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(Color(hex: 0x7bd6a8, opacity: 0.15), in: Capsule())
+                .background(Theme.Colors.good.opacity(0.15), in: Capsule())
 
                 Text(lookup.title)
                     .font(Theme.Fonts.heroTitle)
@@ -1178,7 +1178,7 @@ struct RedesignedScanResultView: View {
             ZStack {
                 if isSelected {
                     LinearGradient(
-                        colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
+                        colors: [Theme.Colors.accent, Theme.Colors.accentDeep],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     )
                 } else {
@@ -1234,7 +1234,7 @@ struct RedesignedScanResultView: View {
         .foregroundStyle(Theme.Colors.good)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color(hex: 0x7bd6a8, opacity: 0.15), in: Capsule())
+        .background(Theme.Colors.good.opacity(0.15), in: Capsule())
     }
 
     // MARK: - Tier 2 — Media type + Status side-by-side
@@ -1558,7 +1558,7 @@ struct RedesignedScanResultView: View {
             .background(
                 RoundedRectangle(cornerRadius: 16)
                     .fill(LinearGradient(
-                        colors: [Theme.Colors.accent, Color(hex: 0x5a64e8)],
+                        colors: [Theme.Colors.accent, Theme.Colors.accentDeep],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     ))
             )
