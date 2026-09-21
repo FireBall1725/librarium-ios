@@ -579,3 +579,78 @@ final class SparklineLabelTests: XCTestCase {
         XCTAssertEqual(RedesignedHomeView.sparklineLabel(counts: []), "No reading recorded yet")
     }
 }
+
+/// A keychain that won't answer is not the same as a session that ended.
+/// Conflating them is what made the app ask for a password after a
+/// background launch on a locked device, and then delete the good tokens.
+@MainActor
+final class KeychainUnavailableTests: XCTestCase {
+
+    private func account(
+        access: String = "",
+        refresh: String = "",
+        unavailable: Bool = false,
+        locked: Bool = false
+    ) -> ServerAccount {
+        ServerAccount(
+            id: UUID(),
+            name: "localhost",
+            url: "http://localhost:8080",
+            accessToken: access,
+            refreshToken: refresh,
+            user: User(id: "u1", username: "fireball", email: "e@example.com",
+                       displayName: "FireBall", isInstanceAdmin: true),
+            accessTokenExpiresAt: nil,
+            kind: .remote,
+            tokensUnavailable: unavailable,
+            keychainLocked: locked
+        )
+    }
+
+    func testMissingTokensStillPromptForSignIn() {
+        XCTAssertTrue(account().needsReauth)
+    }
+
+    func testALockedKeychainDoesNotClaimTheSessionExpired() {
+        XCTAssertFalse(account(unavailable: true, locked: true).needsReauth)
+    }
+
+    func testAnUnreadableKeychainStillLeavesAWayBackIn() {
+        // Not a lock, so it won't fix itself on unlock — the user has to be
+        // able to sign in rather than stare at a server that never loads.
+        XCTAssertTrue(account(unavailable: true).needsReauth)
+    }
+
+    func testBothTokensPresentNeedsNothing() {
+        XCTAssertFalse(account(access: "a", refresh: "r").needsReauth)
+    }
+
+    func testHalfASessionIsNotASession() {
+        XCTAssertTrue(account(access: "a").needsReauth)
+        XCTAssertTrue(account(refresh: "r").needsReauth)
+    }
+
+    func testALiteAccountNeverNeedsReauth() {
+        var lite = account()
+        lite.kind = .local
+        XCTAssertFalse(lite.needsReauth)
+    }
+}
+
+/// The keychain wrapper has to report *why* a read came back empty.
+@MainActor
+final class KeychainLookupTests: XCTestCase {
+
+    func testAMissingKeyIsAbsentRatherThanAFailure() {
+        // Nothing has ever written this key. On a build that can reach the
+        // keychain that is `.absent`; on one that can't (unsigned simulator
+        // builds have no entitlement) it is `.unavailable`. Either way it is
+        // never `.found` and never `.locked`.
+        let result = KeychainService.shared.lookup("test_absent_\(UUID().uuidString)")
+        switch result {
+        case .found: XCTFail("a key that was never written came back with a value")
+        case .locked: XCTFail("a missing key is not a locked device")
+        case .absent, .unavailable: break
+        }
+    }
+}

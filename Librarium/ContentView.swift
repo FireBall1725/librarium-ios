@@ -41,6 +41,10 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
+                // Foreground means the device is unlocked, so any keychain
+                // read that was refused during a background launch can be
+                // retried now — before sync goes looking for a token.
+                appState.reloadUnavailableTokens()
                 Task { await runSyncAllAccounts() }
             }
         }
