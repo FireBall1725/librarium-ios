@@ -3,8 +3,12 @@ import Foundation
 struct LoanService {
     let client: APIClient
 
-    func list(libraryId: String) async throws -> [Loan] {
-        try await client.get("/api/v1/libraries/\(libraryId)/loans")
+    /// The library's loans. Returned ones are left out unless asked for: the
+    /// route's default is what is still out, which is what a badge wants and
+    /// not what a history wants (librarium-ios-123).
+    func list(libraryId: String, includeReturned: Bool = false) async throws -> [Loan] {
+        let path = "/api/v1/libraries/\(libraryId)/loans"
+        return try await client.get(includeReturned ? path + "?include_returned=true" : path)
     }
 
     func create(libraryId: String, body: LoanBody) async throws -> Loan {

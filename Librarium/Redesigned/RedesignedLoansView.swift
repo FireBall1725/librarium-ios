@@ -16,6 +16,10 @@ struct RedesignedLoansView: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var pushed: BookOpenRequest?
     @State private var libraries: [String: Library] = [:]
+    /// The loan a long press asked to delete, held while the confirmation is
+    /// on screen. Deleting a loan removes the record rather than ending it,
+    /// so it is not something to do on one tap (librarium-ios-122).
+    @State private var pendingDelete: Loan?
 
     var body: some View {
         ZStack {
@@ -40,6 +44,22 @@ struct RedesignedLoansView: View {
             await vm.load(appState: appState)
         }
         .refreshable { await vm.load(appState: appState) }
+        .confirmationDialog("Delete this loan?",
+                            isPresented: Binding(get: { pendingDelete != nil },
+                                                 set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let loan = pendingDelete {
+                    Task { await vm.delete(loan, appState: appState) }
+                }
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text(pendingDelete.map {
+                "The record of lending \($0.bookTitle) to \($0.loanedTo) goes away. Marking it returned keeps the history instead."
+            } ?? "")
+        }
         .onChange(of: vm.query) { _, _ in
             searchTask?.cancel()
             searchTask = Task {
@@ -210,6 +230,14 @@ struct RedesignedLoansView: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 12)
         .contentShape(Rectangle())
+        .contextMenu {
+            if loan.isActive {
+                Button("Mark returned") {
+                    Task { await vm.markReturned(loan, appState: appState) }
+                }
+            }
+            Button("Delete loan", role: .destructive) { pendingDelete = loan }
+        }
     }
 
     private func subtitle(_ loan: Loan) -> String {
@@ -296,6 +324,17 @@ final class LoansViewModel {
         let client = appState.makeClient(serverURL: url)
         _ = try? await LoanService(client: client)
             .markReturned(libraryId: loan.libraryId, loanId: loan.id)
+        await load(appState: appState)
+    }
+
+    /// Removes the record, which is a different thing from the book coming
+    /// back: returning one keeps the history, deleting says it never
+    /// happened. The caller confirms first (librarium-ios-122).
+    func delete(_ loan: Loan, appState: AppState) async {
+        guard let url = origin[loan.id] else { return }
+        let client = appState.makeClient(serverURL: url)
+        try? await LoanService(client: client)
+            .delete(libraryId: loan.libraryId, loanId: loan.id)
         await load(appState: appState)
     }
 }
