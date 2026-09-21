@@ -177,6 +177,10 @@ struct CollectionCounts: Decodable {
         case books, series, authors, loans, loansOverdue, suggestions
     }
 
+    /// All zeroes, for a surface drawing itself before the totals arrive.
+    /// Written out because declaring `init(from:)` turns off the memberwise one.
+    init() {}
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         func read(_ key: CodingKeys) -> Int {
