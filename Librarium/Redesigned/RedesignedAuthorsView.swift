@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 FireBall1725 (Adaléa)
 
+import SwiftData
 import SwiftUI
 
 /// The people behind the collection.
@@ -21,10 +22,17 @@ struct RedesignedAuthorsView: View {
     var isActive = true
 
     @Environment(AppState.self) private var appState
+    @Environment(\.modelContext) private var modelContext
 
     @State private var vm = AuthorsViewModel()
     @State private var query = ""
     @State private var selected: AuthorSelection?
+
+    /// The device-backed engine, when the open collection is a Lite one.
+    private var localBrowse: LocalBrowse? {
+        guard let source = appState.activeSource, !source.isServerBacked else { return nil }
+        return LocalBrowse(modelContainer: modelContext.container, serverURL: source.url)
+    }
 
     var body: some View {
         if surface == nil {
@@ -65,9 +73,9 @@ struct RedesignedAuthorsView: View {
         // then sticks for the session.
         .task(id: loadKey) {
             guard isActive, vm.authors.isEmpty else { return }
-            await vm.load(appState: appState)
+            await vm.load(appState: appState, local: localBrowse)
         }
-        .refreshable { await vm.load(appState: appState) }
+        .refreshable { await vm.load(appState: appState, local: localBrowse) }
         .navigationDestination(item: $selected) { pick in
             // Their books, on the surface that already knows how to draw books.
             // A second grid here would be the same grid with one filter
@@ -194,7 +202,7 @@ struct RedesignedAuthorsView: View {
         let active = code == nil ? vm.roles(selected: nil) : vm.selectedRoles.contains(code!)
         Button {
             vm.toggleRole(code)
-            Task { await vm.load(appState: appState) }
+            Task { await vm.load(appState: appState, local: localBrowse) }
         } label: {
             Text("\(label) · \(count)")
                 .font(Theme.Fonts.ui(13, weight: .medium))
@@ -396,15 +404,28 @@ final class AuthorsViewModel {
         CoverURL.resolve(spine.coverUrl, serverURL: origin[authorID] ?? "")
     }
 
-    func load(appState: AppState) async {
+    func load(appState: AppState, local: LocalBrowse? = nil) async {
         isLoading = true
         defer { isLoading = false }
+
+        let picked = selectedRoles
+
+        // A Lite collection counts its own people. There is no contributor
+        // endpoint to ask and no paging to do: the shelf is already on the
+        // device.
+        if let local {
+            let result = local.authors(roles: picked)
+            origin = [:]
+            roles = result.roles
+            authors = Self.ordered(result.people, by: sort)
+            total = authors.count
+            return
+        }
 
         // The open collection only. Two servers are two sets of people, and
         // merging them puts one server's contributor beside another's with no
         // way to tell which shelf a tap will open.
         let accounts = [appState.activeSource].compactMap { $0 }.filter(\.isServerBacked)
-        let picked = selectedRoles
 
         var collected: [AuthorIndexEntry] = []
         var roleCounts: [ContributorRoleCount] = []

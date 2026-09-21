@@ -179,7 +179,46 @@ struct OpenLibraryService {
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return Self.decodeISBNEndpoint(record: json, isbn: isbn)
+        let authors = await Self.resolveAuthorNames(in: json)
+        return Self.decodeISBNEndpoint(record: json, isbn: isbn, authors: authors)
+    }
+
+    /// Turn this endpoint's `[{"key": "/authors/OL123A"}]` refs into names.
+    ///
+    /// Worth the extra requests: when `api/books` has no record for an ISBN,
+    /// this endpoint is the whole answer, and dropping the refs meant a
+    /// scanned Lite book was filed with no author at all. That empties the
+    /// Authors surface and the author sort for the entire collection.
+    ///
+    /// Best effort and concurrent. A ref that will not resolve is left out
+    /// rather than failing the lookup that already has a title and a cover.
+    private static func resolveAuthorNames(in record: [String: Any]) async -> [String] {
+        let keys = (record["authors"] as? [[String: Any]] ?? [])
+            .compactMap { $0["key"] as? String }
+        guard !keys.isEmpty else { return [] }
+
+        return await withTaskGroup(of: (Int, String?).self) { group in
+            for (index, key) in keys.enumerated() {
+                group.addTask {
+                    guard let url = URL(string: "https://openlibrary.org\(key).json") else {
+                        return (index, nil)
+                    }
+                    var req = URLRequest(url: url)
+                    req.timeoutInterval = 10
+                    guard let (data, response) = try? await URLSession.shared.data(for: req),
+                          let http = response as? HTTPURLResponse, http.statusCode == 200,
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let name = json["name"] as? String, !name.isEmpty
+                    else { return (index, nil) }
+                    return (index, name)
+                }
+            }
+            // Back into the order Open Library listed them, which is the
+            // order they are credited on the book.
+            var out: [(Int, String?)] = []
+            for await result in group { out.append(result) }
+            return out.sorted { $0.0 < $1.0 }.compactMap(\.1)
+        }
     }
 
     // MARK: - Decoder
@@ -250,11 +289,12 @@ struct OpenLibraryService {
     /// Decoder for the `/isbn/<isbn>.json` shape. Fields are flatter
     /// than the books-api response: `title`, `publishers` (as string
     /// array), `publish_date`, `number_of_pages`, `covers` (array of
-    /// cover ids that resolve to image URLs). Authors live as
-    /// `[{"key": "/authors/OL123A"}]` refs and would need a second
-    /// round-trip to resolve names — for now we skip them; the user
-    /// can edit after add.
-    private static func decodeISBNEndpoint(record: [String: Any], isbn: String) -> ISBNLookupResult? {
+    /// cover ids that resolve to image URLs). Authors arrive as
+    /// `[{"key": "/authors/OL123A"}]` refs, so their names are resolved by
+    /// the caller and passed in.
+    private static func decodeISBNEndpoint(
+        record: [String: Any], isbn: String, authors: [String]
+    ) -> ISBNLookupResult? {
         let title = (record["title"] as? String) ?? ""
         guard !title.isEmpty else { return nil }
         let subtitle = (record["subtitle"] as? String) ?? ""
@@ -276,7 +316,7 @@ struct OpenLibraryService {
             providerDisplay: "Open Library",
             title: title,
             subtitle: subtitle,
-            authors: [],
+            authors: authors,
             publisher: publisher,
             publishDate: publishDate,
             isbn10: isbn10,

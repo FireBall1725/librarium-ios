@@ -643,7 +643,14 @@ final class RedesignedSearchViewModel {
 
         let remotes = allRemote.filter { !$0.needsReauth }
         guard !remotes.isEmpty else {
-            bookResults = []
+            // Every server wants signing into again. That says nothing about a
+            // Lite collection, which lives on the device and has no account to
+            // be signed out of — clearing the results here threw away hits
+            // already in hand and made a local shelf unsearchable because some
+            // unrelated server's token had expired.
+            bookResults = liteBooks.sorted {
+                $0.book.title.localizedStandardCompare($1.book.title) == .orderedAscending
+            }
             seriesResults = []
             contributorResults = []
             return
