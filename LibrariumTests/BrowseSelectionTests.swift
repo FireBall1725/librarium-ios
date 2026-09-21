@@ -392,3 +392,34 @@ final class BrowseSelectionTests: XCTestCase {
         XCTAssertTrue(wrong.ownership.isEmpty)
     }
 }
+
+/// Pre-ticking a scanned book's genres from what the metadata sources called
+/// it. The rule is deliberately strict, so the test is about what it refuses
+/// as much as what it matches.
+@MainActor
+final class GenreMatchingTests: XCTestCase {
+
+    private func genres(_ names: [String]) throws -> [Genre] {
+        let rows = names.enumerated().map { ["id": "g\($0.offset)", "name": $0.element] }
+        let json = try JSONSerialization.data(withJSONObject: rows)
+        return try JSONDecoder().decode([Genre].self, from: json)
+    }
+
+    func testMatchesRegardlessOfCaseAndSurroundingSpace() throws {
+        let all = try genres(["Fantasy", "Science Fiction", "Manga"])
+        let picked = RedesignedScanResultView.genresMatching(["  fantasy ", "MANGA"], in: all)
+        XCTAssertEqual(picked, ["g0", "g2"])
+    }
+
+    func testRefusesAGenreTheInstanceDoesNotHave() throws {
+        let all = try genres(["Children's", "Fantasy"])
+        // A provider's own vocabulary, which is not this instance's.
+        let picked = RedesignedScanResultView.genresMatching(["Juvenile Fiction"], in: all)
+        XCTAssertTrue(picked.isEmpty, "a provider string is not a licence to invent a genre row")
+    }
+
+    func testNoCategoriesPicksNothing() throws {
+        let all = try genres(["Fantasy"])
+        XCTAssertTrue(RedesignedScanResultView.genresMatching([], in: all).isEmpty)
+    }
+}
